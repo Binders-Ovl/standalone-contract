@@ -1,0 +1,345 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Pausable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
+import "@openzeppelin/contracts/utils/Base64.sol";
+import "./supportContract/binderStructs.sol";
+
+contract BinderData is ERC721, ERC721Enumerable, ERC721Pausable, Ownable, AccessControl {
+
+    bytes32 public constant CONFIG_ROLE = keccak256("CONFIG_ROLE");
+    bytes32 public constant BATTLE_ROLE = keccak256("BATTLE_ROLE");
+    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    bytes32 public constant FUSION_ROLE = keccak256("FUSION_ROLE");
+
+    uint256 public maxSupply = 1000000;  // Fake supply, as it expected to grow currently set to  1,000,000
+    uint128 public supplyBuffer = 125;
+    uint256 public supplyIncrement = 10000;
+    uint128 private _tokenIdCounter = 1;
+
+    string private _baseImageURI;
+    address public binderGraveyard;     //  Address of BinderGraveyard.sol
+    address public fusionOperator;      // Address of FusionMinter.sol 
+
+    // Mapping to store NFT Metadata
+    mapping(uint256 => binderStructs.NFTMetadata) private _tokenMetadata;
+    mapping(uint256 => uint16) public classVersion;             // Mapping to store classVersion for each Class [Not individual NFT, check configVersion for local variable]
+
+    // Events
+    event NFTMinted(address indexed owner, uint256 tokenId, string rarity, string className);
+    event NFTFusionMinted(address indexed owner, uint256 tokenId, string rarity, string className);
+    event SupplyAdded(uint256 indexed amount);
+    event NFTStatsUpdated(uint256 indexed tokenId, uint8[8] newStats, uint16 latestVersion);
+
+    constructor(address initialOwner, string memory baseImageURI) ERC721("Binders", "UBIND") {
+        require(bytes(baseImageURI)[bytes(baseImageURI).length - 1] == '/', "Base URI must end with slash");
+        _baseImageURI = baseImageURI;
+
+        _grantRole(DEFAULT_ADMIN_ROLE, initialOwner);
+        _grantRole(CONFIG_ROLE, initialOwner);
+        _grantRole(BATTLE_ROLE, initialOwner);
+        _grantRole(MINTER_ROLE, initialOwner);
+        _grantRole(FUSION_ROLE, initialOwner);
+    }
+
+    // =====---- Core Minting Function
+
+    /// ================= Internal Mint =================
+
+    function _mintNFT(
+        address recipient,
+        uint256 classId,
+        string memory className,
+        string memory rarity,
+        binderStructs.StaticStats memory staticStats,
+        binderStructs.DynamicStats memory dynamicStats,
+        uint16 configVersion
+    ) internal returns (uint256) {
+        
+        require(_tokenIdCounter <= maxSupply, "Max supply reached");
+        // Auto increment maxSupply when near the end
+        if (maxSupply - _tokenIdCounter <= supplyBuffer) {
+            maxSupply += supplyIncrement;
+            emit SupplyAdded(supplyIncrement);
+        }
+
+        // TODO: Add check for rarity (Common, Uncommon, Rare, Epic, Legend) --> moved to Logic
+
+        uint256 tokenId = _tokenIdCounter++;
+        _safeMint(recipient, tokenId);
+
+        _tokenMetadata[tokenId] = binderStructs.NFTMetadata({
+            name: string(abi.encodePacked(className, "#", Strings.toString(tokenId))),
+            classId: classId,
+            rarity: rarity,
+            staticStats: staticStats,
+            dynamicStats: dynamicStats,
+            configVersion: configVersion
+        });
+
+        return tokenId;
+    }
+
+    /// ================= Minting function and fusion  =================
+    // External Minting Function to be called by BinderMinter.sol
+    function _mintRandomNFT(
+        address recipient,
+        uint256 classId,
+        string memory className,
+        string memory rarity,
+        binderStructs.StaticStats memory staticStats,
+        binderStructs.DynamicStats memory dynamicStats
+    ) external onlyRole(MINTER_ROLE) returns (uint256) {
+        uint16 version = classVersion[classId]; // 
+        uint256 tokenId = _mintNFT(recipient, classId, className, rarity, staticStats, dynamicStats, version);
+        emit NFTMinted(recipient, tokenId, rarity, className);
+        return tokenId;
+    }
+    
+    // External Minting Function to be called by FusionMinter.sol
+    function _mint4Fusion(
+        address recipient,
+        uint256 classId,
+        string memory className,
+        string memory rarity,
+        binderStructs.StaticStats memory staticStats,
+        binderStructs.DynamicStats memory dynamicStats
+    ) external onlyRole(FUSION_ROLE) returns (uint256) {
+        uint16 version = classVersion[classId]; //
+        uint256 tokenId = _mintNFT(recipient, classId, className, rarity, staticStats, dynamicStats, version);
+        emit NFTFusionMinted(recipient, tokenId, className, rarity);
+        return tokenId;
+    }
+
+    /// End of Core Minting Function
+    /// ================= Update NFT Stats =================
+    
+    // =======------- Stats Update for Balancing thru Scale0fBalance.sol, 
+    // =======------- triggered after Library0fCreation.sol updated
+    function updateNFTStats(
+        uint256 tokenId,
+        binderStructs.StaticStats calldata stats,
+        binderStructs.DynamicStats calldata dynamicStats
+    ) external onlyRole(CONFIG_ROLE) {
+        require(_exists(tokenId), "Invalid token");
+
+        binderStructs.NFTMetadata storage meta = _tokenMetadata[tokenId];
+        uint256 classId = meta.classId;
+        uint16 latestVersion = classVersion[classId];
+
+        require(meta.configVersion < latestVersion, "Already updated latest version");
+
+        meta.staticStats = stats;
+        meta.dynamicStats = dynamicStats;
+        meta.configVersion = classVersion[classId];
+
+        emit NFTStatsUpdated(tokenId, stats.stats, latestVersion);
+    }
+
+    // ... Battle Logic Role
+    function updateCurrentStats(uint256 tokenId, uint16 currentHP, uint16 currentMP) external onlyRole(BATTLE_ROLE) {
+        require(_exists(tokenId), "Invalid token");
+        binderStructs.NFTMetadata storage meta = _tokenMetadata[tokenId];
+
+        meta.dynamicStats.currentHP = currentHP > meta.dynamicStats.maxHP ? meta.dynamicStats.maxHP : currentHP;
+        meta.dynamicStats.currentMP = currentMP > meta.dynamicStats.maxMP ? meta.dynamicStats.maxMP : currentMP;
+
+        if (currentHP == 0) {
+            _autoTransferToGraveyard(tokenId);
+        }
+    }
+
+    // Management Function to autotransfer NFT to graveyard during Fusion or HP reach 0
+    function _autoTransferToGraveyard(uint256 tokenId) internal {
+        if (msg.sender != fusionOperator) {
+            require(_tokenMetadata[tokenId].dynamicStats.currentHP == 0, "Not Dead Yet");
+        }
+        address owner = ownerOf(tokenId);
+        _transfer(owner, binderGraveyard, tokenId);
+    }
+
+    /// ================= tokenURI and Metadata =================
+
+    // View functions to get NFT Metadata as JSON
+    function tokenURI(uint256 tokenId) public view override returns (string memory) {
+        require(_exists(tokenId), "Invalid token");
+        binderStructs.NFTMetadata memory meta = _tokenMetadata[tokenId];
+
+        string memory json = Base64.encode(bytes(abi.encodePacked(
+            '{',
+                '"name":"', meta.name, '",',
+                '"description":"Binders Character NFT",',
+                '"image":"', _baseImageURI, Strings.toString(meta.classId), '.gif",',
+                '"attributes":', _generateAttributes(meta),
+            '}'
+        )));
+
+        return string(abi.encodePacked('data:application/json;base64,', json));
+    }
+    
+    // Helper to escape quotes (simplified example)
+    function escape(string memory str) private pure returns (string memory) {
+        bytes memory strBytes = bytes(str);
+        bytes memory result = new bytes(strBytes.length * 2); // Worst-case size
+        uint256 count;
+        for (uint256 i = 0; i < strBytes.length; i++) {
+            if (strBytes[i] == '"') {
+                result[count++] = '\\';
+            }
+            result[count++] = strBytes[i];
+        }
+        // Resize result to actual length
+        bytes memory trimmed = new bytes(count);
+        for (uint256 j = 0; j < count; j++) {
+            trimmed[j] = result[j];
+        }
+        return string(trimmed);
+    }
+
+    //..Helper function to create stat metadata [Used in tokenURI function]
+    function _generateAttributes(binderStructs.NFTMetadata memory meta) internal view returns (string memory) {
+        bool isReadyToArm = meta.configVersion == classVersion[meta.classId];
+        uint8[8] memory stats = meta.staticStats.stats;
+
+        // Part 1: Miscellaneous info (escape rarity)
+        string memory basicInfo = string(abi.encodePacked(
+            '[{"trait_type":"ClassId","value":"', Strings.toString(meta.classId), '"},',
+            '{"trait_type":"Rarity","value":"', escape(meta.rarity), '"},'
+        ));
+
+        // Part 2: Split staticStats into two chunks
+        string memory staticStats1 = string(abi.encodePacked(
+            '{"trait_type":"STR","value":', Strings.toString(stats[0]), '},',
+            '{"trait_type":"INT","value":', Strings.toString(stats[1]), '},',
+            '{"trait_type":"AGI","value":', Strings.toString(stats[2]), '},',
+            '{"trait_type":"DEX","value":', Strings.toString(stats[3]), '},'
+        ));
+        string memory staticStats2 = string(abi.encodePacked(
+            '{"trait_type":"VIT","value":', Strings.toString(stats[4]), '},',
+            '{"trait_type":"WIS","value":', Strings.toString(stats[5]), '},',
+            '{"trait_type":"SPD","value":', Strings.toString(stats[6]), '},',
+            '{"trait_type":"STA","value":', Strings.toString(stats[7]), '},'
+        ));
+        string memory staticStatsMeta = string(abi.encodePacked(staticStats1, staticStats2));
+
+        // Part 3: Split dynamicStats into two chunks
+        string memory dynamicStats1 = string(abi.encodePacked(
+            '{"trait_type":"MaxHP","value":', Strings.toString(meta.dynamicStats.maxHP), '},',
+            '{"trait_type":"CurrentHP","value":', Strings.toString(meta.dynamicStats.currentHP), '},',
+            '{"trait_type":"MaxMP","value":', Strings.toString(meta.dynamicStats.maxMP), '},',
+            '{"trait_type":"CurrentMP","value":', Strings.toString(meta.dynamicStats.currentMP), '},'
+        ));
+        string memory dynamicStats2 = string(abi.encodePacked(
+            '{"trait_type":"Ready To Arm","value":"', isReadyToArm ? "True" : "False", '"}]'
+        ));
+        string memory dynamicStatsMeta = string(abi.encodePacked(dynamicStats1, dynamicStats2));
+
+        return string(abi.encodePacked(basicInfo, staticStatsMeta, dynamicStatsMeta));
+    }
+
+        /* * Depracated due to too deep, keep for reference for now
+        return string(abi.encodePacked('[',
+            '{"trait_type":"ClassId","value":"', Strings.toString(meta.classId), '"},',
+            '{"trait_type":"Rarity","value":"', meta.rarity, '"},',
+            '{"trait_type":"STR","value":', Strings.toString(meta.staticStats.stats[0]), '},',
+            '{"trait_type":"INT","value":', Strings.toString(meta.staticStats.stats[1]), '},',
+            '{"trait_type":"AGI","value":', Strings.toString(meta.staticStats.stats[2]), '},',
+            '{"trait_type":"DEX","value":', Strings.toString(meta.staticStats.stats[3]), '},',
+            '{"trait_type":"VIT","value":', Strings.toString(meta.staticStats.stats[4]), '},',
+            '{"trait_type":"WIS","value":', Strings.toString(meta.staticStats.stats[5]), '},',
+            '{"trait_type":"SPD","value":', Strings.toString(meta.staticStats.stats[6]), '},',
+            '{"trait_type":"STA","value":', Strings.toString(meta.staticStats.stats[7]), '},',
+            '{"trait_type":"MaxHP","value":', Strings.toString(meta.dynamicStats.maxHP), '},',
+            '{"trait_type":"CurrentHP","value":', Strings.toString(meta.dynamicStats.currentHP), '},',
+            '{"trait_type":"MaxMP","value":', Strings.toString(meta.dynamicStats.maxMP), '},',
+            '{"trait_type":"CurrentMP","value":', Strings.toString(meta.dynamicStats.currentMP), '},',
+        ']')); */
+
+    /// ======================= View Functions =======================
+
+    function getNFTClass(uint256 tokenId) external view returns (uint256) {
+        require(_exists(tokenId), "Invalid token");
+        return _tokenMetadata[tokenId].classId;
+    }
+
+    function getNFTRarity(uint256 tokenId) external view returns (string memory) {
+        require(_exists(tokenId), "Invalid token");
+        return _tokenMetadata[tokenId].rarity;
+    }
+
+    // Getter functions for configVersion
+    function getConfigVersion(uint256 tokenId) external view returns (uint16) {
+       require(_exists(tokenId), "Invalid token");
+       return _tokenMetadata[tokenId].configVersion;
+    }
+
+    function getNFTDetails(uint256 tokenId) external view returns (binderStructs.NFTMetadata memory) {
+        require(_exists(tokenId), "Invalid token");
+        return _tokenMetadata[tokenId];
+    }
+    
+
+    /// ======================= Admin Functions =======================
+
+    // IPFS log to set base image URI, supposed to be "classId.gif"
+    function setBaseImageURI(string memory newURI) external onlyOwner {
+        require(bytes(newURI).length > 0 && bytes(newURI)[bytes(newURI).length-1] == '/', "Must end with /");
+        _baseImageURI = newURI;
+    }
+
+   // setter functions for FusionOperator amd Graveyard
+   function setFusionOperator(address newFusionOperator) external onlyRole(FUSION_ROLE) {
+       fusionOperator = newFusionOperator;
+   }
+
+    // setter functions for Graveyard
+    function setGraveyard(address graveyard) external onlyOwner {
+        binderGraveyard = graveyard;
+    }
+
+    // Setter functions for setClassVersion to be called by Scale0fBalance.sol
+    function setClassVersion(uint256 classId, uint16 version) external onlyRole(CONFIG_ROLE) {
+        require(classId > 0, "Invalid classId");
+        require(version > classVersion[classId], "Invalid version");
+        classVersion[classId] = version;
+    }    
+
+    // Pause and Unpause
+    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _unpause();
+    }
+
+    // Override required functions from OpenZeppelin Contracts
+    function _beforeTokenTransfer(address from, address to, uint256 tokenId, uint256 batchSize)
+        internal override(ERC721, ERC721Enumerable, ERC721Pausable)
+    {
+        super._beforeTokenTransfer(from, to, tokenId, batchSize);
+    }
+
+    /** I Use OpenZeppelin 4.8.3 this functions not exist there
+    function _update(address to, uint256 tokenId, address auth)
+        internal override(ERC721Enumerable, ERC721Pausable) returns (address){
+            if(to == binderGraveyard){
+                require(_tokenMetadata[tokenId].dynamicStats.currentHP == 0, "Not Dead Yet");
+            }
+            return super._update(to, tokenId, auth);
+        }
+     */
+        
+
+    function supportsInterface(bytes4 interfaceId)
+        public view override(ERC721, ERC721Enumerable, AccessControl)
+        returns (bool)
+    {
+        return super.supportsInterface(interfaceId);
+    }
+}
