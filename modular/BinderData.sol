@@ -135,7 +135,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     ) external onlyRole(FUSION_ROLE) returns (uint256) {
         uint16 version = classVersion[classId]; //
         uint256 tokenId = _mintNFT(recipient, classId, className, rarity, staticStats, dynamicStats, version);
-        emit NFTFusionMinted(recipient, tokenId, className, rarity);
+        emit NFTFusionMinted(recipient, tokenId, rarity, className);
         return tokenId;
     }
 
@@ -260,6 +260,9 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
 
     // Admin function to set the address of binderUriBldr contract incase we introduce new parameters
     function setBinderUriBldr (address _bldrAddress) external onlyOwner {
+        if (_bldrAddress == address(0)) {
+            revert UriBuilderNotSet();
+        }
         binderUriBldrAddress = _bldrAddress;
     }
 

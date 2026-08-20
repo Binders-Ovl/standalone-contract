@@ -52,6 +52,7 @@ contract Book0fLife is AccessControl {
         require(classId != 0, "Invalid classId");
         require(bytes(_classNames[classId]).length == 0, "Already exists");
         require(version > 0, "Invalid version");
+        _validateClassConfig(config);
 
         _classNames[classId] = name;
         _rarities[classId] = rarity;
@@ -79,10 +80,27 @@ contract Book0fLife is AccessControl {
             hpPerVit: hpPerVit,
             mpPerWis: mpPerWis
         });
+        _validateClassConfig(newConfig);
 
         _classConfigsByVersion[classId][newVersion] = newConfig;
         _configVersionExists[classId][newVersion] = true;
         classVersion[classId] = newVersion;
+    }
+
+    /// @dev Enforces the arithmetic invariants required by all stat allocators.
+    function _validateClassConfig(binderStructs.ClassConfig memory config) internal pure {
+        uint256 totalCapacity;
+
+        for (uint256 i = 0; i < 8; i++) {
+            uint256 minStat = config.minStats[i];
+            uint256 maxStat = config.maxStats[i];
+            require(minStat <= maxStat, "Invalid stat range");
+            totalCapacity += maxStat - minStat;
+        }
+
+        require(config.totalPoints <= totalCapacity, "Points exceed stat capacity");
+        require(uint256(config.maxStats[4]) * config.hpPerVit <= type(uint16).max, "HP exceeds uint16");
+        require(uint256(config.maxStats[5]) * config.mpPerWis <= type(uint16).max, "MP exceeds uint16");
     }
 
     function removeClass(uint256 classId) external onlyRole(CONFIG_ROLE) {
