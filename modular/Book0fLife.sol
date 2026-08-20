@@ -20,6 +20,8 @@ contract Book0fLife is AccessControl {
     // Track Fusion Recipes && Fusion recipe: sorted(class1, class2) → outcome
     binderStructs.ClassPair[] private _allFusionPairs;
     mapping(uint256 => mapping(uint256 => bool)) private _fusionPairExists;
+    // Stores array index + 1 so zero means no tracked pair.
+    mapping(uint256 => mapping(uint256 => uint256)) private _fusionPairIndex;
     mapping(uint256 => mapping(uint256 => binderStructs.FusionRecipe)) private _fusionRecipe;
 
     // Events
@@ -33,9 +35,13 @@ contract Book0fLife is AccessControl {
     address public currentFusionMinter;
 
     constructor() {
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(CONFIG_ROLE, msg.sender);
-        _grantRole(FUSION_MINTER, msg.sender);
+        address deployer = msg.sender;
+        currentConfigAdmin = deployer;
+        currentFusionMinter = deployer;
+
+        _grantRole(DEFAULT_ADMIN_ROLE, deployer);
+        _grantRole(CONFIG_ROLE, deployer);
+        _grantRole(FUSION_MINTER, deployer);
     }
 
     // === Class Setup ===
@@ -140,14 +146,30 @@ contract Book0fLife is AccessControl {
 
         // Pair Tracker
         if (!_fusionPairExists[a][b]) {
-            _allFusionPairs.push(binderStructs.ClassPair(class1, class2));
+            _allFusionPairs.push(binderStructs.ClassPair(a, b));
             _fusionPairExists[a][b] = true;
+            _fusionPairIndex[a][b] = _allFusionPairs.length;
         } 
     }
 
     function removeFusionRecipe(uint256 class1, uint256 class2) external onlyRole(CONFIG_ROLE) {
         (uint256 a, uint256 b) = _sortMi(class1, class2);
         delete _fusionRecipe[a][b];
+
+        if (_fusionPairExists[a][b]) {
+            uint256 pairIndex = _fusionPairIndex[a][b] - 1;
+            uint256 lastIndex = _allFusionPairs.length - 1;
+
+            if (pairIndex != lastIndex) {
+                binderStructs.ClassPair memory lastPair = _allFusionPairs[lastIndex];
+                _allFusionPairs[pairIndex] = lastPair;
+                _fusionPairIndex[lastPair.class1][lastPair.class2] = pairIndex + 1;
+            }
+
+            _allFusionPairs.pop();
+            delete _fusionPairIndex[a][b];
+            _fusionPairExists[a][b] = false;
+        }
     }
 
     // === View Access ===
@@ -217,12 +239,12 @@ contract Book0fLife is AccessControl {
         binderStructs.AllSimpleFusionRecipe[] memory result = new binderStructs.AllSimpleFusionRecipe[](len);
         for (uint i = 0; i < len; i++) {
             binderStructs.ClassPair memory pair = _allFusionPairs[i];
-            binderStructs.FusionRecipe memory recipe = _fusionRecipe[pair.class1][pair.class2];
-
+            (uint256 a, uint256 b) = _sortMi(pair.class1, pair.class2);
+            binderStructs.FusionRecipe memory recipe = _fusionRecipe[a][b];
 
             result[i] = binderStructs.AllSimpleFusionRecipe({
-                class1: pair.class1,
-                class2: pair.class2,
+                class1: a,
+                class2: b,
                 recipe: recipe
             });
         }
