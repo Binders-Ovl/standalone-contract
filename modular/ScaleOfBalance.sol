@@ -75,10 +75,23 @@ contract ScaleOfBalance is AccessControl {
         binderStructs.ClassConfig memory newConfig = book0fLife.getClassConfig(meta.classId);
 
         // 3. Calculate new stats
+        bytes32 redistributionSeed = keccak256(
+            abi.encode(
+                "UPGRADE_STATS",
+                tokenId,
+                meta.classId,
+                meta.configVersion,
+                newConfig.minStats,
+                newConfig.maxStats,
+                newConfig.totalPoints,
+                meta.staticStats.stats
+            )
+        );
         binderStructs.StaticStats memory newStats = _calculateStats(
             oldConfig,
             newConfig,
-            meta.staticStats
+            meta.staticStats,
+            redistributionSeed
         );
 
         // 4. Calculate new HP/MP with ratio preservation
@@ -184,9 +197,11 @@ contract ScaleOfBalance is AccessControl {
     function _calculateStats(
         binderStructs.ClassConfig memory oldConfig,
         binderStructs.ClassConfig memory newConfig,
-        binderStructs.StaticStats memory oldStats
-    ) internal pure returns (binderStructs.StaticStats memory) {binderStructs.StaticStats memory newStats;
-        uint256 totalPoints;
+        binderStructs.StaticStats memory oldStats,
+        bytes32 redistributionSeed
+    ) internal pure returns (binderStructs.StaticStats memory) {
+        binderStructs.StaticStats memory newStats;
+        uint256 allocatedPoints;
 
         // Phase 1: Linear scaling
         for (uint i = 0; i < 8; i++) {
@@ -198,39 +213,83 @@ contract ScaleOfBalance is AccessControl {
             if (oldMax <= oldMin) { // Edge Case handling just incase I messed up and make it have 0 scaling range
                 newStats.stats[i] = uint8(newMin);
             } else {
-                uint256 scaled = (uint256(oldStats.stats[i] - oldMin) * (newMax - newMin)) / (oldMax - oldMin);
-                newStats.stats[i] = uint8(newMin + scaled);
+                uint256 oldRange = oldMax - oldMin;
+                uint256 newRange = newMax - newMin;
+                uint256 oldExtra = uint256(oldStats.stats[i]) > oldMin
+                    ? uint256(oldStats.stats[i]) - oldMin
+                    : 0;
+                uint256 scaledExtra = (oldExtra * newRange) / oldRange;
+                if (scaledExtra > newRange) scaledExtra = newRange;
+                newStats.stats[i] = uint8(newMin + scaledExtra);
             }
-            totalPoints += newStats.stats[i];
+            allocatedPoints += uint256(newStats.stats[i]) - newMin;
         }
 
         // Phase 2: Point redistribution
-        int256 delta = int256(uint256(newConfig.totalPoints)) - int256(totalPoints);
-        if (delta != 0) {
-            bool addMode = delta > 0;
-            uint256 absDelta = delta < 0 ? uint256(-delta) : uint256(delta);
-            uint8 iterations = uint8(absDelta); // Assumes delta Will never exceed 255
+        int256 delta = int256(uint256(newConfig.totalPoints)) - int256(allocatedPoints);
+        if (delta == 0) return newStats;
 
-            for (uint256 i = 0; i < iterations; i++) {
-                uint8 statIndex = uint8(i % 8);
+        bool addMode = delta > 0;
+        uint256 remainingPoints = delta > 0 ? uint256(delta) : uint256(-delta);
+        for (uint256 step = 0; step < remainingPoints; step++) {
+            uint8 statIndex = _selectRedistributionStat(
+                newStats,
+                newConfig,
+                addMode,
+                redistributionSeed,
+                step
+            );
 
-                if (addMode) {    // if delta is positive, increase the stat
-                    if (newStats.stats[statIndex] < newConfig.maxStats[statIndex]) {
-                        newStats.stats[statIndex]++;
-                        delta--;
-                    }
-                } else {            // if delta is negative, decrease the stat
-                    if (newStats.stats[statIndex] > newConfig.minStats[statIndex]) {
-                        newStats.stats[statIndex]--;
-                        delta++;
-                    }
-                }
-
-                if (delta == 0) break;
+            if (addMode) {
+                newStats.stats[statIndex]++;
+            } else {
+                newStats.stats[statIndex]--;
             }
         }
 
         return newStats;
+    }
+
+    function _selectRedistributionStat(
+        binderStructs.StaticStats memory stats,
+        binderStructs.ClassConfig memory config,
+        bool addMode,
+        bytes32 seed,
+        uint256 step
+    ) internal pure returns (uint8) {
+        uint8[8] memory eligibleStats;
+        uint256[8] memory weights;
+        uint8 eligibleCount;
+        uint256 totalWeight;
+
+        for (uint8 i = 0; i < 8; i++) {
+            uint256 current = stats.stats[i];
+            uint256 minStat = config.minStats[i];
+            uint256 maxStat = config.maxStats[i];
+            uint256 extra = current - minStat;
+            uint256 range = maxStat - minStat;
+            uint256 available = addMode ? maxStat - current : extra;
+
+            if (available == 0) continue;
+
+            eligibleStats[eligibleCount] = i;
+            // Additions favor already-earned allocations; removals favor lower
+            // relative allocations so stronger existing stats are less likely
+            // to lose their preserved upgrade advantage.
+            weights[eligibleCount] = addMode ? extra + 1 : range - extra + 1;
+            totalWeight += weights[eligibleCount];
+            eligibleCount++;
+        }
+
+        require(eligibleCount > 0, "No eligible stat");
+
+        uint256 selection = uint256(keccak256(abi.encode(seed, step))) % totalWeight;
+        for (uint8 i = 0; i < eligibleCount; i++) {
+            if (selection < weights[i]) return eligibleStats[i];
+            selection -= weights[i];
+        }
+
+        revert("Invalid stat selection");
     }
 
     // ================== HELPER FUNCTIONS ==================
