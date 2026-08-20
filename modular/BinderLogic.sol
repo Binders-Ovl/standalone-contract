@@ -41,6 +41,7 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
 
     event RandomRequest(address indexed user, uint64 indexed sequenceNumber);
     event RandomMintCompleted(address indexed user, uint64 indexed sequenceNumber);
+    event NativeFundsWithdrawn(address indexed recipient, uint256 amount);
 
     constructor(
         address _entropy,
@@ -54,13 +55,15 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
         binderData = IBinderData(_binderData);
         book0fLife = IBook0fLife(_book0fLife);
 
+        transferOwnership(initialOwner);
         _grantRole(DEFAULT_ADMIN_ROLE, initialOwner);
     }
 
     /// Request randomness from entropy
     function requestMint(bytes32 userSeed) external payable nonReentrant {
         uint256 fee = entropy.getFeeV2(provider, 0);     // Update to V2 change getFee(provider) ==> getFeeV2(Provider,gasFee)
-        require(msg.value >= fee + mintPrice, "Not enough gold MyLord");
+        uint256 requiredPayment = fee + mintPrice;
+        require(msg.value >= requiredPayment, "Not enough gold MyLord");
 
         uint64 sequenceNumber = entropy.requestV2{value: fee}(    // Update to V2 change requestWithCallback(provider, userSeed) ==> requestv22(Provider, userSeed, gasFee)
             provider, userSeed, 0);
@@ -255,6 +258,17 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
     /// Admin function to update mint price
     function setMintPrice(uint256 _mintPrice) external onlyRole(DEFAULT_ADMIN_ROLE) {
         mintPrice = _mintPrice;
+    }
+
+    /// Withdraw accumulated mint revenue and any directly received native funds.
+    function withdraw() external onlyOwner nonReentrant {
+        address payable recipient = payable(owner());
+        uint256 amount = address(this).balance;
+        require(amount > 0, "No funds");
+
+        (bool sent, ) = recipient.call{value: amount}("");
+        require(sent, "Withdrawal failed");
+        emit NativeFundsWithdrawn(recipient, amount);
     }
 
     /// Entropy Override

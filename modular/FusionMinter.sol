@@ -41,7 +41,7 @@ interface IBook0fLife {
 // STA  Determine value of movement range           ==>     uint8[7]
 
 
-contract FusionMinter is ERC721Holder, AccessControl, Pausable, ReentrancyGuard, IEntropyConsumer {
+contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, ReentrancyGuard, IEntropyConsumer {
     bytes32 public constant FUSION_OVERLORD = keccak256("FUSION_OVERLORD");
 
     IBinderData public binderData;
@@ -61,9 +61,11 @@ contract FusionMinter is ERC721Holder, AccessControl, Pausable, ReentrancyGuard,
     event BaseBinderUpdated(address newBinder);
     event Book0fLifeUpdated(address newFusionLibrary);
     event AdvancedFusionRequested(uint256 fusionId, address user, uint256[] nftIds, address[] catalysts); // Placeholder for Advanced fusion emission
+    event NativeFundsWithdrawn(address indexed recipient, uint256 amount);
 
 
     constructor(address binderData_, address book0fLife_, address entropyAddress, address providerAddress, address initialOwner) {
+        transferOwnership(initialOwner);
         _grantRole(DEFAULT_ADMIN_ROLE, initialOwner);
         _grantRole(FUSION_OVERLORD, initialOwner);
 
@@ -101,10 +103,6 @@ contract FusionMinter is ERC721Holder, AccessControl, Pausable, ReentrancyGuard,
         _fusionRequest[fusionId] = binderStructs.FusionRequest({ user: msg.sender, nftId1: nftId1, nftId2: nftId2, resolved: false });
 
         _processEntropyRequest(fusionId);
-
-        if (msg.value > totalCost) {
-            payable(msg.sender).transfer(msg.value - totalCost);
-        }
 
         emit FusionRequested(fusionId, msg.sender, nftId1, nftId2);
     }
@@ -405,9 +403,14 @@ contract FusionMinter is ERC721Holder, AccessControl, Pausable, ReentrancyGuard,
         emit Book0fLifeUpdated(newFusionLibrary);
     }
 
-    function withdraw() external onlyRole(DEFAULT_ADMIN_ROLE) {
-        uint256 balance = address(this).balance;
-        payable(msg.sender).transfer(balance);
+    function withdraw() external onlyOwner nonReentrant {
+        address payable recipient = payable(owner());
+        uint256 amount = address(this).balance;
+        require(amount > 0, "No funds");
+
+        (bool sent, ) = recipient.call{value: amount}("");
+        require(sent, "Withdrawal failed");
+        emit NativeFundsWithdrawn(recipient, amount);
     }
 
     // Pause/Unpause and supportInterface Functions

@@ -58,6 +58,10 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         }
         baseImageURI = newBaseImageURI;
 
+        // Ownable initially assigns ownership to the deployer; align it with
+        // the configured administrator and role recipient.
+        transferOwnership(initialOwner);
+
         _grantRole(DEFAULT_ADMIN_ROLE, initialOwner);
         _grantRole(CONFIG_ROLE, initialOwner);
         _grantRole(BATTLE_ROLE, initialOwner);
