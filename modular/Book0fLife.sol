@@ -9,7 +9,8 @@ contract Book0fLife is AccessControl {
     // Class data
     mapping(uint256 => string) private _classNames;
     mapping(uint256 => string) private _rarities;
-    mapping(uint256 => binderStructs.ClassConfig) private _classConfigs;
+    mapping(uint256 => mapping(uint16 => binderStructs.ClassConfig)) private _classConfigsByVersion;
+    mapping(uint256 => mapping(uint16 => bool)) private _configVersionExists;
     mapping(uint256 => uint16) public classVersion;
 
     // Track Class Ids and Fusion Keys
@@ -44,10 +45,12 @@ contract Book0fLife is AccessControl {
     ) external onlyRole(CONFIG_ROLE) {
         require(classId != 0, "Invalid classId");
         require(bytes(_classNames[classId]).length == 0, "Already exists");
+        require(version > 0, "Invalid version");
 
         _classNames[classId] = name;
         _rarities[classId] = rarity;
-        _classConfigs[classId] = config;
+        _classConfigsByVersion[classId][version] = config;
+        _configVersionExists[classId][version] = true;
         classVersion[classId] = version;
 
         if (!_classExists[classId]) {
@@ -63,7 +66,7 @@ contract Book0fLife is AccessControl {
         require(bytes(_classNames[classId]).length > 0, "Class does not exist");
         require(newVersion > classVersion[classId], "Invalid version");
 
-        _classConfigs[classId] = binderStructs.ClassConfig({
+        binderStructs.ClassConfig memory newConfig = binderStructs.ClassConfig({
             minStats: minStats,
             maxStats: maxStats,
             totalPoints: totalPoints,
@@ -71,13 +74,14 @@ contract Book0fLife is AccessControl {
             mpPerWis: mpPerWis
         });
 
+        _classConfigsByVersion[classId][newVersion] = newConfig;
+        _configVersionExists[classId][newVersion] = true;
         classVersion[classId] = newVersion;
     }
 
     function removeClass(uint256 classId) external onlyRole(CONFIG_ROLE) {
         delete _classNames[classId];
         delete _rarities[classId];
-        delete _classConfigs[classId];
         delete classVersion[classId];
     }
 
@@ -157,7 +161,16 @@ contract Book0fLife is AccessControl {
     }
 
     function getClassConfig(uint256 classId) external view returns (binderStructs.ClassConfig memory) {
-        return _classConfigs[classId];
+        return _classConfigsByVersion[classId][classVersion[classId]];
+    }
+
+    function getClassConfigAtVersion(uint256 classId, uint16 version)
+        external
+        view
+        returns (binderStructs.ClassConfig memory)
+    {
+        require(_configVersionExists[classId][version], "Unknown config version");
+        return _classConfigsByVersion[classId][version];
     }
 
     function getFusionRecipe(uint256 class1, uint256 class2) external view returns (binderStructs.FusionRecipe memory) {
@@ -193,7 +206,8 @@ contract Book0fLife is AccessControl {
         uint256 len = _allClassIds.length;
         binderStructs.ClassConfig[] memory configs = new binderStructs.ClassConfig[](len);
         for (uint i = 0; i < len; i++) {
-            configs[i] = _classConfigs[_allClassIds[i]];
+            uint256 classId = _allClassIds[i];
+            configs[i] = _classConfigsByVersion[classId][classVersion[classId]];
         }
         return configs;
     }

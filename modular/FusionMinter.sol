@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;    
+pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts-4.8/access/Ownable.sol";
 import "@openzeppelin/contracts-4.8/token/ERC721/IERC721.sol";
@@ -15,12 +15,12 @@ import "./supportContract/binderStructs.sol";
 interface IBinderData is IERC721 {
     function _mint4Fusion(address recipient, uint256 classId, string memory className, string memory rarity, binderStructs.StaticStats memory staticStats, binderStructs.DynamicStats memory dynamicStats
     ) external returns (uint256);
-    function _autoTransferToGraveyard(uint256 tokenId) external;
+    function tfToGraveyard(uint256 tokenId) external;
     function getNFTClass(uint256 tokenId) external view returns (uint256);
     function getNFTRarity(uint256 tokenId) external view returns (string memory);
 }
 
-/** Interface to FusionLibrary Contract --> Book0fLife.sol */   
+/** Interface to FusionLibrary Contract --> Book0fLife.sol */
 interface IBook0fLife {
     function getFusionRecipe(uint256 class1, uint256 class2) external view returns (binderStructs.FusionRecipe memory);
     function getClassName(uint256 classId) external view returns (string memory);
@@ -85,8 +85,8 @@ contract FusionMinter is ERC721Holder, AccessControl, Pausable, ReentrancyGuard,
         require(msg.value >= totalCost, "Not enough gold my lord");
 
         require(
-            binderData.ownerOf(nftId1) == msg.sender && 
-            binderData.ownerOf(nftId2) == msg.sender, 
+            binderData.ownerOf(nftId1) == msg.sender &&
+            binderData.ownerOf(nftId2) == msg.sender,
             "Cannot sacrifice what u dont own"
         );
 
@@ -134,7 +134,7 @@ contract FusionMinter is ERC721Holder, AccessControl, Pausable, ReentrancyGuard,
 
         // Block I: Calculate class ID and fusion Outcome
         (bool success, uint256 targetClass) = _getFusionOutcome(class1, class2, randomBytes);
-        
+
         // Block II: Generate metadata and Stats
         (
             string memory className,
@@ -154,16 +154,16 @@ contract FusionMinter is ERC721Holder, AccessControl, Pausable, ReentrancyGuard,
             dynamicStats
         );
 
-        binderData._autoTransferToGraveyard(sId1);
-        binderData._autoTransferToGraveyard(sId2);
+        binderData.tfToGraveyard(sId1);
+        binderData.tfToGraveyard(sId2);
 
         _emitFusionResult(fusionId, user, success, newTokenId, class1, class2, targetClass);
     }
 
-    // 3. Calculate Outcome of riteFusion Function  
-    function _calculateOutcome(uint256 class1, uint256 class2, bytes32 entropyBytes, uint256 outcomeClassId, uint16 successChance) internal pure 
+    // 3. Calculate Outcome of riteFusion Function
+    function _calculateOutcome(uint256 class1, uint256 class2, bytes32 entropyBytes, uint256 outcomeClassId, uint16 successChance) internal pure
         returns (bool success, uint256 targetClass) {
-        
+
         bool hasRecipe = outcomeClassId != 0;
 
         uint256 successRand = uint256(entropyBytes) % 10000;    // 0 - 10000 (0.00% - 100.00%)
@@ -299,7 +299,7 @@ contract FusionMinter is ERC721Holder, AccessControl, Pausable, ReentrancyGuard,
             maxHP: stats.stats[4] * config.hpPerVit,
             maxMP: stats.stats[5] * config.mpPerWis,
             currentHP: stats.stats[4] * config.hpPerVit,
-            currentMP: stats.stats[5] * config.mpPerWis  
+            currentMP: stats.stats[5] * config.mpPerWis
         });
     }
 
@@ -311,7 +311,7 @@ contract FusionMinter is ERC721Holder, AccessControl, Pausable, ReentrancyGuard,
             book0fLife.getClassConfig(classId)
         );
     }
-    
+
     // Entropy Request Information - Requested by User thru riteFusion Function to be used in entropyCallback Function
     function _processEntropyRequest(uint256 fusionId) internal {
         uint256 fee = entropy.getFee(entropyProvider);
@@ -331,7 +331,7 @@ contract FusionMinter is ERC721Holder, AccessControl, Pausable, ReentrancyGuard,
         return a < b? (a, b) : (b, a);
     }
 
-/* 
+/*
     // This will not be used anytime soon please ignore
     // Sorting Hash of Class IDs to prevent duplicate Recipes to be used in riteFusion Function for advance FUSION
     // TODO : Implement this function lateron down the road, now just act as placeholder and reminder
@@ -351,11 +351,11 @@ contract FusionMinter is ERC721Holder, AccessControl, Pausable, ReentrancyGuard,
 
     // Another STUB for advance FUSION
     function advanceFuse(uint256[] memory nftIds, ERC20Input[] memory catalysts) external payable nonReentrant whenNotPaused {
-        
+
         uint256 totalCost = entropy.getFee(entropyProvider) + fusionCost;
         require(msg.value >= totalCost, "Not enough gold my lord");
         require(nftIds.length >= 3, "Invalid number of NFTs");
-    
+
         // 1. Handling Catalyst Transfer
         address[] memory catalystsAddrs = new address[](catalysts.length);
         for (uint i = 0; i < catalysts.length; i++) {

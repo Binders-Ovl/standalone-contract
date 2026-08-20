@@ -30,6 +30,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     error UriBuilderNotSet();
     error InvalidClassId();
     error InvalidNewVersionTooHigh();
+    error GraveyardNotSet();
 
     // ==== ---- State Variables ---- =====
     uint256 public maxSupply = 1000000;  // Fake supply, as it expected to grow currently set to  1,000,000
@@ -39,7 +40,6 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
 
     string public baseImageURI;
     address public binderGraveyard;     //  Address of BinderGraveyard.sol
-    address public fusionOperator;      // Address of FusionMinter.sol 
     address public binderUriBldrAddress; // Address of Binder NFT Decripter (BinderUriBldr.sol)
 
     // Mapping to store NFT Metadata
@@ -65,7 +65,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         _grantRole(FUSION_ROLE, initialOwner);
     }
 
-    // ===== ---- Core Minting Function ---- ==== 
+    // ===== ---- Core Minting Function ---- ====
     /// ================= Internal Mint =================
 
     function _mintNFT(
@@ -77,7 +77,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         binderStructs.DynamicStats memory dynamicStats,
         uint16 configVersion
     ) internal returns (uint256) {
-        
+
         if (_tokenIdCounter > maxSupply){
             revert MaxSupplyReached();
         }
@@ -114,12 +114,12 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         binderStructs.StaticStats memory staticStats,
         binderStructs.DynamicStats memory dynamicStats
     ) external onlyRole(MINTER_ROLE) returns (uint256) {
-        uint16 version = classVersion[classId]; // 
+        uint16 version = classVersion[classId]; //
         uint256 tokenId = _mintNFT(recipient, classId, className, rarity, staticStats, dynamicStats, version);
         emit NFTMinted(recipient, tokenId, rarity, className);
         return tokenId;
     }
-    
+
     // External Minting Function to be called by FusionMinter.sol
     function _mint4Fusion(
         address recipient,
@@ -137,8 +137,8 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
 
     /// End of Core Minting Function
     /// ================= Update NFT Stats =================
-    
-    // =======------- Stats Update for Balancing thru Scale0fBalance.sol, 
+
+    // =======------- Stats Update for Balancing thru Scale0fBalance.sol,
     // =======------- triggered after Library0fCreation.sol updated
     function updateNFTStats(
         uint256 tokenId,
@@ -175,18 +175,31 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         meta.dynamicStats.currentHP = currentHP > meta.dynamicStats.maxHP ? meta.dynamicStats.maxHP : currentHP;
         meta.dynamicStats.currentMP = currentMP > meta.dynamicStats.maxMP ? meta.dynamicStats.maxMP : currentMP;
 
-        if (currentHP == 0) {
+        if (meta.dynamicStats.currentHP == 0) {
             _autoTransferToGraveyard(tokenId);
         }
     }
 
-    // Management Function to autotransfer NFT to graveyard during Fusion or HP reach 0
+    // Management function for automatic retirement when an NFT reaches zero HP.
     function _autoTransferToGraveyard(uint256 tokenId) internal {
-        if (msg.sender != fusionOperator) {
-            if(_tokenMetadata[tokenId].dynamicStats.currentHP != 0){
-                revert NotDeadYet();
-            }
+        if (_tokenMetadata[tokenId].dynamicStats.currentHP != 0) {
+            revert NotDeadYet();
         }
+
+        if (binderGraveyard == address(0)) {
+            revert GraveyardNotSet();
+        }
+
+        address owner = ownerOf(tokenId);
+        _transfer(owner, binderGraveyard, tokenId);
+    }
+
+    // Explicit fusion retirement path. Fusion is authorized by FUSION_ROLE;
+    function tfToGraveyard(uint256 tokenId) external onlyRole(FUSION_ROLE) {
+        if (binderGraveyard == address(0)) {
+            revert GraveyardNotSet();
+        }
+
         address owner = ownerOf(tokenId);
         _transfer(owner, binderGraveyard, tokenId);
     }
@@ -204,7 +217,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
 
         return IBinderUriBldr(binderUriBldrAddress).tokenURI(tokenId);
     }
-    
+
     // CL : _generateAtrributes moved BinderUriBldr.sol
 
     /// ======================= View Functions =======================
@@ -237,7 +250,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         }
         return _tokenMetadata[tokenId];
     }
-    
+
 
     /// ======================= Admin Functions =======================
 
@@ -254,15 +267,13 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         baseImageURI = newURI;
     }
 
-   // setter functions for FusionOperator amd Graveyard
-   function setFusionOperator(address newFusionOperator) external onlyRole(FUSION_ROLE) {
-       fusionOperator = newFusionOperator;
+   // setter functions for Graveyard
+   function setGraveyard(address graveyard) external onlyOwner {
+       if (graveyard == address(0)) {
+           revert GraveyardNotSet();
+       }
+       binderGraveyard = graveyard;
    }
-
-    // setter functions for Graveyard
-    function setGraveyard(address graveyard) external onlyOwner {
-        binderGraveyard = graveyard;
-    }
 
     // Setter functions for setClassVersion to be called by Scale0fBalance.sol
     function setClassVersion(uint256 classId, uint16 version) external onlyRole(CONFIG_ROLE) {
@@ -274,7 +285,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
             revert InvalidNewVersionTooHigh();
         }
         classVersion[classId] = version;
-    }    
+    }
 
     // Pause and Unpause
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -301,7 +312,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
             return super._update(to, tokenId, auth);
         }
      */
-        
+
 
     function supportsInterface(bytes4 interfaceId)
         public view override(ERC721, AccessControl)

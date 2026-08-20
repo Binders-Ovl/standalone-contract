@@ -10,9 +10,6 @@ contract ScaleOfBalance is AccessControl {
     BinderData public binderData;
     Book0fLife public book0fLife;
 
-        // Track historical configurations for each class
-    mapping(uint256 => binderStructs.ClassConfig[]) public classConfigHistory;
-    
         // Events
     event logClassConfigUpdated(string indexed className, binderStructs.ClassConfig indexed config, uint256 indexed timestamp, uint256 blockNumber);
     event logFusionRecipeSet(uint256 class1, uint256 class2, uint256[] classIds, uint16[] multiProbChance, uint16 successChance);
@@ -29,16 +26,7 @@ contract ScaleOfBalance is AccessControl {
     // ================== PUBLIC FUNCTIONS ==================
     // 1. Upgrade NFT By user
     function upgradeNFT(uint256 tokenId) external {
-        require(binderData.ownerOf(tokenId) == msg.sender, "Not owner");
-
-        //Gatekeep Ready to Arm
-        binderStructs.NFTMetadata memory meta = binderData.getNFTDetails(tokenId);
-        require(meta.configVersion != binderData.classVersion(meta.classId), "Already upgraded"); // Replace readyToArm to This to check if NFT updated or not
-
-        // require(!binderData.getNFTDetails(tokenId).isReadyToArm, "Already upgraded"); // I need Change this as it is not defined in Structs
-        _upgradeNFTInternal(tokenId);
-
-        emit upgradeSuccesful(msg.sender, tokenId);
+        _upgradeNFTFor(msg.sender, tokenId);
     }
 
     // 2. Batch upgrade NFTs by user
@@ -48,7 +36,7 @@ contract ScaleOfBalance is AccessControl {
         for (uint256 i = 0; i < tokenIds.length; i++) {
             uint256 tokenId = tokenIds[i];
 
-            try this.upgradeNFT(tokenId){
+            try this.upgradeNFTFromBatch(msg.sender, tokenId){
                 // Success
             } catch Error(string memory reason) {
                 // Failed
@@ -59,15 +47,31 @@ contract ScaleOfBalance is AccessControl {
         }
     }
 
+    // Self-only adapter keeps the original batch caller explicit while
+    // preserving per-token try/catch behavior.
+    function upgradeNFTFromBatch(address user, uint256 tokenId) external {
+        require(msg.sender == address(this), "Only self");
+        _upgradeNFTFor(user, tokenId);
+    }
+
 
     // ================== CORE FUNCTIONALITY ==================
-    function _upgradeNFTInternal(uint256 tokenId) internal {
+    function _upgradeNFTFor(address user, uint256 tokenId) internal {
+        require(binderData.ownerOf(tokenId) == user, "Not owner");
 
-        // 1. Get NFT metadata
+        // Gatekeep Ready to Arm
         binderStructs.NFTMetadata memory meta = binderData.getNFTDetails(tokenId);
-        
-        // 2. Get configs
-        binderStructs.ClassConfig memory oldConfig = classConfigHistory[meta.classId][classConfigHistory[meta.classId].length - 1];
+        uint16 latestVersion = _getSyncedClassVersion(meta.classId);
+        require(meta.configVersion < latestVersion, "Already upgraded");
+
+        _upgradeNFTInternal(tokenId, meta);
+
+        emit upgradeSuccesful(user, tokenId);
+    }
+
+    function _upgradeNFTInternal(uint256 tokenId, binderStructs.NFTMetadata memory meta) internal {
+        // 1. Get the NFT's actual historical config and the current config
+        binderStructs.ClassConfig memory oldConfig = book0fLife.getClassConfigAtVersion(meta.classId, meta.configVersion);
         binderStructs.ClassConfig memory newConfig = book0fLife.getClassConfig(meta.classId);
 
         // 3. Calculate new stats
@@ -117,21 +121,10 @@ contract ScaleOfBalance is AccessControl {
         // Gating the possible Total point to be 2/3 max of Maximum all Stats
         require(newConfig.totalPoints < (totalDelta * 67) / 100 , "totalPoints must be Lower than total delta");
 
-        // Define versioning from both contracts
-        uint16 bookVer = book0fLife.getClassVersion(classId);
-        uint16 dataVer = binderData.classVersion(classId);
-
-        // Save old config to history
-        classConfigHistory[classId].push(book0fLife.getClassConfig(classId));
-
-        // Update version
-        uint16 newVersion;
-
-        if (bookVer == dataVer) {
-            newVersion = bookVer +1;
-        } else {
-            newVersion = (bookVer > dataVer ? bookVer : dataVer) + 1;
-        }
+        // Keep Book0fLife and BinderData synchronized; do not hide a desync.
+        uint16 currentVersion = _getSyncedClassVersion(classId);
+        require(currentVersion < type(uint16).max, "Version overflow");
+        uint16 newVersion = currentVersion + 1;
         
         // Push new config to base contract
         book0fLife.upgradeClassConfig(
@@ -169,6 +162,13 @@ contract ScaleOfBalance is AccessControl {
 
         book0fLife.addNewClass(classId, name, rarity, config, 1);
         binderData.setClassVersion(classId, 1);
+    }
+
+    function _getSyncedClassVersion(uint256 classId) internal view returns (uint16) {
+        uint16 bookVersion = book0fLife.getClassVersion(classId);
+        uint16 dataVersion = binderData.classVersion(classId);
+        require(bookVersion == dataVersion, "Version desync");
+        return dataVersion;
     }
 
     // 3. SetFusionRecipe and its probability
