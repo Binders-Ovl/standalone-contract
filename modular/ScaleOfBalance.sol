@@ -177,6 +177,11 @@ contract ScaleOfBalance is AccessControl {
         binderData.setClassVersion(classId, 1);
     }
 
+    /// @dev Transitional wrapper for assigning a Book rarity/pool ID.
+    function setClassRarityId(uint256 classId, uint16 rarityId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        book0fLife.setClassRarityId(classId, rarityId);
+    }
+
     function _getSyncedClassVersion(uint256 classId) internal view returns (uint16) {
         uint16 bookVersion = book0fLife.getClassVersion(classId);
         uint16 dataVersion = binderData.classVersion(classId);

@@ -9,9 +9,29 @@ contract Book0fLife is AccessControl {
     // Class data
     mapping(uint256 => string) private _classNames;
     mapping(uint256 => string) private _rarities;
+    mapping(uint256 => uint16) public classRarityId;
     mapping(uint256 => mapping(uint16 => binderStructs.ClassConfig)) private _classConfigsByVersion;
     mapping(uint256 => mapping(uint16 => bool)) private _configVersionExists;
     mapping(uint256 => uint16) public classVersion;
+
+    // Transitional rarity/pool index. The current mint path still uses string rarity labels.
+    mapping(uint16 => uint256[]) private _classesByRarityId;
+    mapping(uint256 => uint256) private _rarityIndexPlusOne;
+
+    /*
+     * Reserved rarity/pool ID ranges:
+     *   0       = Neutral / Global
+     *   1-10    = Weatonia
+     *   11-20   = Urtaka
+     *   21-30   = Mitrevar
+     *   31-40   = Listhar
+     *   41-50   = Maritime / Archipelago
+     *   51-60   = Empire faction
+     *   61-70   = Northern high-tech faction
+     *   80-199  = Reserved for new nations
+     *   200-249 = Global special pools
+     *   250-299 = Seasonal/event pools
+     */
 
     // Track Class Ids and Fusion Keys
     uint256[] private _allClassIds;
@@ -56,6 +76,7 @@ contract Book0fLife is AccessControl {
 
         _classNames[classId] = name;
         _rarities[classId] = rarity;
+        _addClassToRarityId(classId, 0);
         _classConfigsByVersion[classId][version] = config;
         _configVersionExists[classId][version] = true;
         classVersion[classId] = version;
@@ -104,9 +125,45 @@ contract Book0fLife is AccessControl {
     }
 
     function removeClass(uint256 classId) external onlyRole(CONFIG_ROLE) {
+        require(bytes(_classNames[classId]).length > 0, "Class does not exist");
+        _removeClassFromRarityId(classId);
         delete _classNames[classId];
         delete _rarities[classId];
         delete classVersion[classId];
+    }
+
+    /// @notice Assigns a class to a rarity/pool ID without changing its display label.
+    /// @dev This transitional index will be refactored with the full rarityId migration.
+    function setClassRarityId(uint256 classId, uint16 newRarityId) external onlyRole(CONFIG_ROLE) {
+        require(bytes(_classNames[classId]).length > 0, "Class does not exist");
+        uint16 oldRarityId = classRarityId[classId];
+        if (oldRarityId == newRarityId) return;
+
+        _removeClassFromRarityId(classId);
+        _addClassToRarityId(classId, newRarityId);
+    }
+
+    function _addClassToRarityId(uint256 classId, uint16 rarityId) internal {
+        _classesByRarityId[rarityId].push(classId);
+        _rarityIndexPlusOne[classId] = _classesByRarityId[rarityId].length;
+        classRarityId[classId] = rarityId;
+    }
+
+    function _removeClassFromRarityId(uint256 classId) internal {
+        uint16 rarityId = classRarityId[classId];
+        uint256[] storage classIds = _classesByRarityId[rarityId];
+        uint256 index = _rarityIndexPlusOne[classId] - 1;
+        uint256 lastIndex = classIds.length - 1;
+
+        if (index != lastIndex) {
+            uint256 lastClassId = classIds[lastIndex];
+            classIds[index] = lastClassId;
+            _rarityIndexPlusOne[lastClassId] = index + 1;
+        }
+
+        classIds.pop();
+        delete _rarityIndexPlusOne[classId];
+        delete classRarityId[classId];
     }
 
     // === Fusion Recipes === 
@@ -198,6 +255,43 @@ contract Book0fLife is AccessControl {
 
     function getClassRarity(uint256 classId) external view returns (string memory) {
         return _rarities[classId];
+    }
+
+    /// @notice Returns all active class IDs assigned to a transitional rarity/pool ID.
+    /// @dev This will change or be refactored to accommodate nation-specific pools in the future.
+    function getClassesByRarityId(uint16 rarityId) external view returns (uint256[] memory) {
+        return _classesByRarityId[rarityId];
+    }
+
+    /// @notice Compatibility lookup for the current string-based mint path.
+    /// @dev Option B will replace this with rarityId-based selection after pool assignments are finalized.
+    function getClassesByRarity(string calldata rarity) external view returns (uint256[] memory) {
+        bytes32 rarityHash = keccak256(bytes(rarity));
+        uint256 matchCount;
+
+        for (uint256 i = 0; i < _allClassIds.length; i++) {
+            uint256 classId = _allClassIds[i];
+            if (
+                bytes(_classNames[classId]).length > 0 &&
+                keccak256(bytes(_rarities[classId])) == rarityHash
+            ) {
+                matchCount++;
+            }
+        }
+
+        uint256[] memory classIds = new uint256[](matchCount);
+        uint256 resultIndex;
+        for (uint256 i = 0; i < _allClassIds.length; i++) {
+            uint256 classId = _allClassIds[i];
+            if (
+                bytes(_classNames[classId]).length > 0 &&
+                keccak256(bytes(_rarities[classId])) == rarityHash
+            ) {
+                classIds[resultIndex++] = classId;
+            }
+        }
+
+        return classIds;
     }
 
     function getClassConfig(uint256 classId) external view returns (binderStructs.ClassConfig memory) {
