@@ -7,7 +7,7 @@ import "@openzeppelin/contracts-4.8/token/ERC721/utils/ERC721Holder.sol";
 import "@openzeppelin/contracts-4.8/access/AccessControl.sol";
 import "@openzeppelin/contracts-4.8/security/Pausable.sol";
 import "@openzeppelin/contracts-4.8/security/ReentrancyGuard.sol";
-import "@pythnetwork/entropy-sdk-solidity/IEntropy.sol";
+import "@pythnetwork/entropy-sdk-solidity/IEntropyV2.sol";
 import "@pythnetwork/entropy-sdk-solidity/IEntropyConsumer.sol";
 import "./supportContract/binderStructs.sol";
 
@@ -46,7 +46,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
 
     IBinderData public binderData;
     IBook0fLife public book0fLife;
-    IEntropy public entropy;
+    IEntropyV2 public entropy;
     address public entropyProvider;
 
     uint256 public nextFusionId;
@@ -71,7 +71,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
 
         binderData = IBinderData(binderData_);
         book0fLife = IBook0fLife(book0fLife_);
-        entropy = IEntropy(entropyAddress);
+        entropy = IEntropyV2(entropyAddress);
         entropyProvider = providerAddress;
     }
 
@@ -83,7 +83,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     /* Fusion Operations */
     // 1. Initiate riteFusion Function
     function riteFusion(uint256 nftId1, uint256 nftId2) external payable nonReentrant whenNotPaused {
-        uint256 totalCost = entropy.getFee(entropyProvider) + fusionCost;
+        uint256 totalCost = entropy.getFeeV2(entropyProvider, 0) + fusionCost;
         require(msg.value >= totalCost, "Not enough gold my lord");
 
         require(
@@ -312,11 +312,12 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
 
     // Entropy Request Information - Requested by User thru riteFusion Function to be used in entropyCallback Function
     function _processEntropyRequest(uint256 fusionId) internal {
-        uint256 fee = entropy.getFee(entropyProvider);
+        uint256 fee = entropy.getFeeV2(entropyProvider, 0);
         bytes32 userSeed = keccak256(abi.encodePacked(block.timestamp, fusionId));
-        uint64 sequence = entropy.requestWithCallback{value: fee}(
+        uint64 sequence = entropy.requestV2{value: fee}(
             entropyProvider,
-            userSeed
+            userSeed,
+            0
         );
 
         _entropyToFusionId[sequence] = fusionId;
@@ -350,7 +351,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     // Another STUB for advance FUSION
     function advanceFuse(uint256[] memory nftIds, ERC20Input[] memory catalysts) external payable nonReentrant whenNotPaused {
 
-        uint256 totalCost = entropy.getFee(entropyProvider) + fusionCost;
+        uint256 totalCost = entropy.getFeeV2(entropyProvider, 0) + fusionCost;
         require(msg.value >= totalCost, "Not enough gold my lord");
         require(nftIds.length >= 3, "Invalid number of NFTs");
 
@@ -382,10 +383,6 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         });
 
         _processEntropyRequest(fusionId);
-
-        if (msg.value > totalCost) {
-            payable(msg.sender).transfer(msg.value - totalCost);
-        }
 
         emit AdvancedFusionRequested(fusionId, msg.sender, nftIds, catalystsAddrs);
     }
