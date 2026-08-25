@@ -13,11 +13,10 @@ import "./supportContract/binderStructs.sol";
 
 /** Interface to master Conctract --> BinderData.sol */
 interface IBinderData is IERC721 {
-    function _mint4Fusion(address recipient, uint256 classId, string memory className, string memory rarity, binderStructs.StaticStats memory staticStats, binderStructs.DynamicStats memory dynamicStats
+    function _mint4Fusion(address recipient, uint256 classId, string memory className, uint8 rarityId, string memory rarityName, binderStructs.StaticStats memory staticStats, binderStructs.DynamicStats memory dynamicStats
     ) external returns (uint256);
     function tfToGraveyard(uint256 tokenId) external;
     function getNFTClass(uint256 tokenId) external view returns (uint256);
-    function getNFTRarity(uint256 tokenId) external view returns (string memory);
 }
 
 /** Interface to FusionLibrary Contract --> Book0fLife.sol */
@@ -25,7 +24,9 @@ interface IBook0fLife {
     function getFusionRecipe(uint256 class1, uint256 class2) external view returns (binderStructs.FusionRecipe memory);
     function getClassName(uint256 classId) external view returns (string memory);
     function getClassConfig(uint256 classId) external view returns (binderStructs.ClassConfig memory);
-    function getClassRarity(uint256 classId) external view returns (string memory);
+    function getClassRarityId(uint256 classId) external view returns (uint8);
+    function getRarityName(uint8 rarityId) external view returns (string memory);
+    function hasClassAcquisition(uint256 classId, uint32 flagMask) external view returns (bool);
 }
 
 /** Struct for Stats - Class Config - FUsionRequest */
@@ -43,6 +44,7 @@ interface IBook0fLife {
 
 contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, ReentrancyGuard, IEntropyConsumer {
     bytes32 public constant FUSION_OVERLORD = keccak256("FUSION_OVERLORD");
+    uint32 public constant ACQ_FUSION = uint32(1) << 1;
 
     IBinderData public binderData;
     IBook0fLife public book0fLife;
@@ -95,10 +97,6 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         binderData.safeTransferFrom(msg.sender, address(this), nftId1);
         binderData.safeTransferFrom(msg.sender, address(this), nftId2);
 
-        uint256 class1 = binderData.getNFTClass(nftId1);
-        uint256 class2 = binderData.getNFTClass(nftId2);
-        (class1, class2) = _sortMi(class1, class2);
-
         uint256 fusionId = ++nextFusionId;
         _fusionRequest[fusionId] = binderStructs.FusionRequest({ user: msg.sender, nftId1: nftId1, nftId2: nftId2, resolved: false });
 
@@ -132,25 +130,11 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
 
         // Block I: Calculate class ID and fusion Outcome
         (bool success, uint256 targetClass) = _getFusionOutcome(class1, class2, randomBytes);
+        if (success) {
+            require(book0fLife.hasClassAcquisition(targetClass, ACQ_FUSION), "Fusion disabled for target");
+        }
 
-        // Block II: Generate metadata and Stats
-        (
-            string memory className,
-            string memory rarity,
-            binderStructs.StaticStats memory stats,
-            binderStructs.DynamicStats memory dynamicStats
-        ) = _getNFTDetailsAndStats(targetClass, randomBytes);
-
-        // Block III: Mint the new token
-
-        uint256 newTokenId = binderData._mint4Fusion(
-            user,
-            targetClass,
-            className,
-            rarity,
-            stats,
-            dynamicStats
-        );
+        uint256 newTokenId = _mintFusionResult(user, targetClass, randomBytes);
 
         binderData.tfToGraveyard(sId1);
         binderData.tfToGraveyard(sId2);
@@ -238,13 +222,24 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
 
     // Core | Helper to generate all necessary metadata for minting the new token at entropyCallback
     function _getNFTDetailsAndStats(uint256 targetClass, bytes32 entropyBytes) internal view returns (
-        string memory className, string memory rarity, binderStructs.StaticStats memory stats, binderStructs.DynamicStats memory dynamicStats){
+        string memory className, uint8 rarityId, string memory rarityName, binderStructs.StaticStats memory stats, binderStructs.DynamicStats memory dynamicStats){
             bytes32 statSeed = keccak256(abi.encodePacked(entropyBytes, "STATS"));
             binderStructs.ClassConfig memory config;
-            (className, rarity, config) = _getTargetMetadata(targetClass);
+            (className, rarityId, rarityName, config) = _getTargetMetadata(targetClass);
             stats = _allocateStats(config, statSeed);
             dynamicStats = _buildDynStats(stats, config);
         }
+
+    function _mintFusionResult(address user, uint256 targetClass, bytes32 entropyBytes) internal returns (uint256) {
+        (
+            string memory className,
+            uint8 rarityId,
+            string memory rarityName,
+            binderStructs.StaticStats memory stats,
+            binderStructs.DynamicStats memory dynamicStats
+        ) = _getNFTDetailsAndStats(targetClass, entropyBytes);
+        return binderData._mint4Fusion(user, targetClass, className, rarityId, rarityName, stats, dynamicStats);
+    }
 
     // Helper Functions to generate allocation order and byte order for allocateStats function
     function _generateAllocationOrder(bytes32 seed) private pure returns (uint8[8] memory order) {
@@ -302,12 +297,9 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     }
 
     function _getTargetMetadata (uint256 classId
-    ) internal view returns (string memory className, string memory rarity, binderStructs.ClassConfig memory config) {
-        return (
-            book0fLife.getClassName(classId),
-            book0fLife.getClassRarity(classId),
-            book0fLife.getClassConfig(classId)
-        );
+    ) internal view returns (string memory className, uint8 rarityId, string memory rarityName, binderStructs.ClassConfig memory config) {
+        rarityId = book0fLife.getClassRarityId(classId);
+        return (book0fLife.getClassName(classId), rarityId, book0fLife.getRarityName(rarityId), book0fLife.getClassConfig(classId));
     }
 
     // Entropy Request Information - Requested by User thru riteFusion Function to be used in entropyCallback Function

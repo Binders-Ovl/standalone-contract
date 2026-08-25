@@ -4,275 +4,330 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts-4.8/access/Ownable.sol";
 import "@openzeppelin/contracts-4.8/access/AccessControl.sol";
 import "@openzeppelin/contracts-4.8/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts-4.8/utils/math/Math.sol";
 import "@pythnetwork/entropy-sdk-solidity/IEntropyConsumer.sol";
 import "@pythnetwork/entropy-sdk-solidity/IEntropyV2.sol";
 import "./supportContract/binderStructs.sol";
 
-interface IBinderData {
-    function _mintRandomNFT(address, uint256, string memory, string memory, binderStructs.StaticStats memory, binderStructs.DynamicStats memory) external returns (uint256);
+interface IBinderDataMint {
+    function _mintRandomNFT(
+        address recipient,
+        uint256 classId,
+        string memory className,
+        uint8 rarityId,
+        string memory rarityName,
+        binderStructs.StaticStats memory staticStats,
+        binderStructs.DynamicStats memory dynamicStats
+    ) external returns (uint256);
 }
 
-interface IBook0fLife {
+interface IBook0fLifeMint {
+    function isRarityRegistered(uint8 rarityId) external view returns (bool);
     function getClassName(uint256 classId) external view returns (string memory);
     function getClassConfig(uint256 classId) external view returns (binderStructs.ClassConfig memory);
-    function getClassesByRarity(string memory rarity) external view returns (uint256[] memory);
+    function getRarityName(uint8 rarityId) external view returns (string memory);
+    function getClassesByNationRarity(uint8 nationId, uint8 rarityId) external view returns (uint256[] memory);
+    function isClassMintEligible(uint256 classId, uint8 playerNationId) external view returns (bool);
 }
 
+interface IAllegianceRegistryMint {
+    function getPlayerNation(address player) external view returns (uint8);
+}
+
+/// @notice Entropy-backed normal mint orchestration.
+/// @dev Nation state is only a per-request snapshot. AllegianceRegistry remains authoritative.
 contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsumer {
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    uint16 public constant MAX_CHANCE_VALUE = 10_000;
 
-    IEntropyV2 public entropy;          // Update to V2
+    struct MintRequest {
+        address recipient;
+        uint8 nationId;
+    }
+
+    IEntropyV2 public entropy;
     address public provider;
-    IBinderData public binderData;
-    IBook0fLife public book0fLife;
+    IBinderDataMint public binderData;
+    IBook0fLifeMint public book0fLife;
+    IAllegianceRegistryMint public allegianceRegistry;
 
     uint256 public mintPrice = 0.0125 ether;
-    bytes32 public previousRandomNumber;                // Logging previous user Random number
-    mapping(uint64 => address) private entropyRequests; // sequenceNumber => minter address
+    bytes32 public previousRandomNumber;
+    mapping(uint64 => MintRequest) private _mintRequests;
 
-    // Rarity thresholds (basis points out of 10000)
-    uint256 public constant MAX_CHANCE_VALUE = 10000; // 100% with 2 decimal places
-    uint256 public commonChance = 7500;
-    uint256 public uncommonChance = 1500;
-    uint256 public rareChance = 1000;
-    uint256 public epicChance = 0;
-    uint256 public legendChance = 0;
+    uint8[] private _activeRarityIds;
+    mapping(uint8 => uint16) private _rarityChanceBps;
 
-    event RandomRequest(address indexed user, uint64 indexed sequenceNumber);
-    event RandomMintCompleted(address indexed user, uint64 indexed sequenceNumber);
+    event RandomRequest(address indexed user, uint64 indexed sequenceNumber, uint8 nationId);
+    event RandomMintCompleted(address indexed user, uint64 indexed sequenceNumber, uint8 rarityId, uint256 classId);
+    event RarityDistributionChanged(uint8[] rarityIds, uint16[] chancesBps);
+    event AllegianceRegistryUpdated(address indexed registry);
     event NativeFundsWithdrawn(address indexed recipient, uint256 amount);
 
+    error InvalidMintRequest(uint64 sequenceNumber);
+    error InvalidRarityDistribution();
+    error NoEligibleClass(uint8 rarityId, uint8 nationId);
+
     constructor(
-        address _entropy,
-        address _provider,
-        address _binderData,
-        address _book0fLife,
+        address entropyAddress,
+        address providerAddress,
+        address binderDataAddress,
+        address book0fLifeAddress,
+        address allegianceRegistryAddress,
         address initialOwner
     ) {
-        entropy = IEntropyV2(_entropy);     // Update to V2
-        provider = _provider;
-        binderData = IBinderData(_binderData);
-        book0fLife = IBook0fLife(_book0fLife);
-
+        require(
+            entropyAddress != address(0) && providerAddress != address(0) && binderDataAddress != address(0)
+                && book0fLifeAddress != address(0) && allegianceRegistryAddress != address(0) && initialOwner != address(0),
+            "Invalid address"
+        );
+        entropy = IEntropyV2(entropyAddress);
+        provider = providerAddress;
+        binderData = IBinderDataMint(binderDataAddress);
+        book0fLife = IBook0fLifeMint(book0fLifeAddress);
+        allegianceRegistry = IAllegianceRegistryMint(allegianceRegistryAddress);
         transferOwnership(initialOwner);
         _grantRole(DEFAULT_ADMIN_ROLE, initialOwner);
+
+        // Default migration distribution: Common 75%, Uncommon 15%, Rare 10%.
+        _activeRarityIds.push(1);
+        _activeRarityIds.push(2);
+        _activeRarityIds.push(3);
+        _rarityChanceBps[1] = 7_500;
+        _rarityChanceBps[2] = 1_500;
+        _rarityChanceBps[3] = 1_000;
     }
 
-    /// Request randomness from entropy
     function requestMint(bytes32 userSeed) external payable nonReentrant {
-        uint256 fee = entropy.getFeeV2(provider, 0);     // Update to V2 change getFee(provider) ==> getFeeV2(Provider,gasFee)
-        uint256 requiredPayment = fee + mintPrice;
-        require(msg.value >= requiredPayment, "Not enough gold MyLord");
+        uint256 fee = entropy.getFeeV2(provider, 0);
+        require(msg.value >= fee + mintPrice, "Not enough gold MyLord");
 
-        uint64 sequenceNumber = entropy.requestV2{value: fee}(    // Update to V2 change requestWithCallback(provider, userSeed) ==> requestv22(Provider, userSeed, gasFee)
-            provider, userSeed, 0);
-        entropyRequests[sequenceNumber] = msg.sender;
-
-        emit RandomRequest(msg.sender, sequenceNumber);
+        // Snapshot before the external Entropy request. The callback must never
+        // consult live allegiance, including if a provider implementation evolves.
+        uint8 nationId = allegianceRegistry.getPlayerNation(msg.sender);
+        uint64 sequenceNumber = entropy.requestV2{value: fee}(provider, userSeed, 0);
+        _mintRequests[sequenceNumber] = MintRequest({recipient: msg.sender, nationId: nationId});
+        emit RandomRequest(msg.sender, sequenceNumber, nationId);
     }
 
-    /// Entropy callback
-    function entropyCallback(
-        uint64 sequenceNumber,
-        address providerAddress,
-        bytes32 randomNumber
-    ) internal override {
+    function entropyCallback(uint64 sequenceNumber, address providerAddress, bytes32 randomNumber) internal override {
         require(providerAddress == provider, "Invalid entropy provider");
-        address recipient = entropyRequests[sequenceNumber];
-        require(recipient != address(0), "Invalid entropy request");
+        MintRequest memory request = _mintRequests[sequenceNumber];
+        if (request.recipient == address(0)) revert InvalidMintRequest(sequenceNumber);
 
-        _generateAndMint(recipient, sequenceNumber, randomNumber);
-
-        previousRandomNumber = randomNumber; // Logging random Number to be used partially for next User
-        delete entropyRequests[sequenceNumber];
-    }
-
-    /// Core logic
-    function _generateAndMint(address recipient, uint64 sequenceNumber, bytes32 seed) internal {
-        (string memory rarity, uint256 classId, binderStructs.StaticStats memory stats, binderStructs.DynamicStats memory dynamicStats) = _generateProperties(seed);
+        (uint8 rarityId, uint256 classId, binderStructs.StaticStats memory stats, binderStructs.DynamicStats memory dynamicStats) =
+            _generateProperties(randomNumber, request.nationId);
 
         binderData._mintRandomNFT(
-            recipient,
+            request.recipient,
             classId,
             book0fLife.getClassName(classId),
-            rarity,
+            rarityId,
+            book0fLife.getRarityName(rarityId),
             stats,
             dynamicStats
         );
 
-        emit RandomMintCompleted(recipient, sequenceNumber);
+        previousRandomNumber = randomNumber;
+        delete _mintRequests[sequenceNumber];
+        emit RandomMintCompleted(request.recipient, sequenceNumber, rarityId, classId);
     }
 
-    /// Generate full NFT properties from seed
-    function _generateProperties(bytes32 seed) internal view returns (
-        string memory rarity,
-        uint256 classId,
-        binderStructs.StaticStats memory stats,
-        binderStructs.DynamicStats memory dynamicStats
-        ) {
-        // Split the seed into two parts
-        bytes16 prevHead = bytes16(previousRandomNumber);                       // First 16 bytes of previous user randomNumber
-        bytes16 currTail = bytes16(uint128(uint256(seed)));                       // Last 16 bytes of current user randomNumber
-        bytes16 classSeed = bytes16(seed);                      // First 16 bytes of current randomNumber for class / rarity randomizer
-        bytes32 statSeed = bytes32(bytes.concat(prevHead,currTail));            // Full 32-bytes stat side
+    function setRarityDistribution(uint8[] calldata rarityIds, uint16[] calldata chancesBps)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (rarityIds.length == 0 || rarityIds.length != chancesBps.length) revert InvalidRarityDistribution();
 
-        rarity = _determineRarity(uint128(classSeed));
-        uint256[] memory candidates = book0fLife.getClassesByRarity(rarity);    // fetch possible classes for rarity at book0fLife
-        require(candidates.length > 0, "No available class for rarity");
+        uint256 totalChance;
+        uint8 previousId;
+        for (uint256 i = 0; i < rarityIds.length; ++i) {
+            uint8 rarityId = rarityIds[i];
+            if (
+                rarityId == 0 || (i != 0 && rarityId <= previousId) || chancesBps[i] == 0
+                    || !book0fLife.isRarityRegistered(rarityId)
+            ) revert InvalidRarityDistribution();
+            totalChance += chancesBps[i];
+            previousId = rarityId;
+        }
+        if (totalChance != MAX_CHANCE_VALUE) revert InvalidRarityDistribution();
 
-        classId = candidates[uint128(classSeed) % candidates.length];           // rand for getting class
+        for (uint256 i = 0; i < _activeRarityIds.length; ++i) {
+            delete _rarityChanceBps[_activeRarityIds[i]];
+        }
+        delete _activeRarityIds;
+        for (uint256 i = 0; i < rarityIds.length; ++i) {
+            _activeRarityIds.push(rarityIds[i]);
+            _rarityChanceBps[rarityIds[i]] = chancesBps[i];
+        }
+        emit RarityDistributionChanged(rarityIds, chancesBps);
+    }
+
+    function setAllegianceRegistry(address registry) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(registry != address(0), "Invalid registry");
+        allegianceRegistry = IAllegianceRegistryMint(registry);
+        emit AllegianceRegistryUpdated(registry);
+    }
+
+    function setMintPrice(uint256 newMintPrice) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        mintPrice = newMintPrice;
+    }
+
+    function getMintRequest(uint64 sequenceNumber) external view returns (address recipient, uint8 nationId) {
+        MintRequest memory request = _mintRequests[sequenceNumber];
+        return (request.recipient, request.nationId);
+    }
+
+    function getActiveRarityDistribution() external view returns (uint8[] memory rarityIds, uint16[] memory chancesBps) {
+        rarityIds = _activeRarityIds;
+        chancesBps = new uint16[](rarityIds.length);
+        for (uint256 i = 0; i < rarityIds.length; ++i) {
+            chancesBps[i] = _rarityChanceBps[rarityIds[i]];
+        }
+    }
+
+    function getRarityChanceBps(uint8 rarityId) external view returns (uint16) {
+        return _rarityChanceBps[rarityId];
+    }
+
+    function withdraw() external onlyOwner nonReentrant {
+        address payable recipient = payable(owner());
+        uint256 amount = address(this).balance;
+        require(amount > 0, "No funds");
+        (bool sent,) = recipient.call{value: amount}("");
+        require(sent, "Withdrawal failed");
+        emit NativeFundsWithdrawn(recipient, amount);
+    }
+
+    function getEntropy() internal view override returns (address) {
+        return address(entropy);
+    }
+
+    function _generateProperties(bytes32 entropySeed, uint8 nationId)
+        internal
+        view
+        returns (
+            uint8 rarityId,
+            uint256 classId,
+            binderStructs.StaticStats memory stats,
+            binderStructs.DynamicStats memory dynamicStats
+        )
+    {
+        rarityId = _determineRarity(uint256(keccak256(abi.encodePacked("BINDERS_RARITY", entropySeed))));
+        classId = _selectEligibleClass(
+            rarityId,
+            nationId,
+            uint256(keccak256(abi.encodePacked("BINDERS_CLASS", entropySeed)))
+        );
 
         binderStructs.ClassConfig memory config = book0fLife.getClassConfig(classId);
+        bytes32 statSeed = keccak256(abi.encodePacked("BINDERS_STATS", previousRandomNumber, entropySeed));
         stats = _allocateStats(config, statSeed);
-
         dynamicStats = binderStructs.DynamicStats({
             maxHP: uint16(stats.stats[4]) * config.hpPerVit,
             maxMP: uint16(stats.stats[5]) * config.mpPerWis,
             currentHP: uint16(stats.stats[4]) * config.hpPerVit,
             currentMP: uint16(stats.stats[5]) * config.mpPerWis
         });
-
-        return (rarity, classId, stats, dynamicStats);
     }
 
-    /// Rarity Determination
-    function _determineRarity(uint256 randomness) internal view returns (string memory) {
+    function _determineRarity(uint256 randomness) internal view returns (uint8) {
         uint256 roll = randomness % MAX_CHANCE_VALUE;
-        uint256 threshold = commonChance;
-
-        if (roll < threshold) return "Common";
-        threshold += uncommonChance;
-        if (roll < threshold) return "Uncommon";
-        threshold += rareChance;
-        if (roll < threshold) return "Rare";
-        threshold += epicChance;
-        if (roll < threshold) return "Epic";
-        return "Legend";
+        uint256 cumulative;
+        for (uint256 i = 0; i < _activeRarityIds.length; ++i) {
+            uint8 rarityId = _activeRarityIds[i];
+            cumulative += _rarityChanceBps[rarityId];
+            if (roll < cumulative) return rarityId;
+        }
+        revert InvalidRarityDistribution();
     }
 
-    /// Allocate Stats from ClassConfig
-    function _allocateStats(binderStructs.ClassConfig memory config, bytes32 seed) internal pure returns (binderStructs.StaticStats memory stats) {
-        stats = binderStructs.StaticStats({
-            stats: [
-                config.minStats[0],         // Storage Slot for STR
-                config.minStats[1],         // Storage Slot for INT
-                config.minStats[2],         // Storage Slot for AGI
-                config.minStats[3],         // Storage Slot for DEX
-                config.minStats[4],         // Storage Slot for VIT
-                config.minStats[5],         // Storage Slot for WIS
-                config.minStats[6],         // Storage Slot for SPD
-                config.minStats[7]          // Storage Slot for STA
-            ]
-        });
+    function _selectEligibleClass(uint8 rarityId, uint8 nationId, uint256 randomness) internal view returns (uint256) {
+        uint256[] memory generalClasses = book0fLife.getClassesByNationRarity(0, rarityId);
+        uint256 eligibleCount = _countEligibleClasses(generalClasses, nationId);
+        uint256[] memory nationClasses;
+        if (nationId != 0) {
+            nationClasses = book0fLife.getClassesByNationRarity(nationId, rarityId);
+            eligibleCount += _countEligibleClasses(nationClasses, nationId);
+        }
+        if (eligibleCount == 0) revert NoEligibleClass(rarityId, nationId);
 
-        uint256 remainingPoints = config.totalPoints;
+        uint256 selectedIndex = randomness % eligibleCount;
+        uint256 generalEligibleCount = _countEligibleClasses(generalClasses, nationId);
+        if (selectedIndex < generalEligibleCount) {
+            return _getEligibleClassAt(generalClasses, nationId, selectedIndex);
+        }
+        return _getEligibleClassAt(nationClasses, nationId, selectedIndex - generalEligibleCount);
+    }
 
+    function _countEligibleClasses(uint256[] memory candidates, uint8 nationId) internal view returns (uint256 count) {
+        for (uint256 i = 0; i < candidates.length; ++i) {
+            if (book0fLife.isClassMintEligible(candidates[i], nationId)) ++count;
+        }
+    }
+
+    function _getEligibleClassAt(uint256[] memory candidates, uint8 nationId, uint256 selectedIndex)
+        internal
+        view
+        returns (uint256)
+    {
+        for (uint256 i = 0; i < candidates.length; ++i) {
+            if (!book0fLife.isClassMintEligible(candidates[i], nationId)) continue;
+            if (selectedIndex == 0) return candidates[i];
+            --selectedIndex;
+        }
+        revert("Eligible class index out of range");
+    }
+
+    function _allocateStats(binderStructs.ClassConfig memory config, bytes32 seed)
+        internal
+        pure
+        returns (binderStructs.StaticStats memory stats)
+    {
+        stats = binderStructs.StaticStats({stats: config.minStats});
+        uint16 remainingPoints = config.totalPoints;
         bytes memory entropyBytes = abi.encodePacked(seed);
-        uint8[8] memory statOrder = _generateAllocationOrder(seed); // shuffle 8 stats
-        uint8[32] memory byteOrder = _generateBytesOrder(seed); // shuffle bytes order
+        uint8[8] memory statOrder = _generateAllocationOrder(seed);
+        uint8[32] memory byteOrder = _generateBytesOrder(seed);
+        uint8 usedBytes;
 
-        uint8 usedBytes = 0;
-
-        // First pass allocation
-       while (remainingPoints > 0 && usedBytes < 32) {
-            for (uint8 i = 0; i < 8 && remainingPoints > 0; i++) {
+        while (remainingPoints > 0 && usedBytes < 32) {
+            for (uint8 i = 0; i < 8 && remainingPoints > 0; ++i) {
                 if (usedBytes >= 32) break;
-
                 uint8 statIndex = statOrder[i];
-                uint8 byteIndex = byteOrder[usedBytes++];
-                uint8 randByte = uint8(entropyBytes[byteIndex]);
-                
                 uint8 current = stats.stats[statIndex];
-                uint8 maxAdd = config.maxStats[statIndex] - current;           
+                uint8 maxAdd = config.maxStats[statIndex] - current;
+                uint8 randByte = uint8(entropyBytes[byteOrder[usedBytes++]]);
                 if (maxAdd == 0) continue;
-
-                uint8 alloc = randByte % (maxAdd + 1);
-                alloc = alloc < remainingPoints ? alloc : uint8(remainingPoints);
-
-                stats.stats[statIndex] = current + alloc;
-                remainingPoints -= alloc;
+                uint16 allocation = randByte % (uint16(maxAdd) + 1);
+                if (allocation > remainingPoints) allocation = remainingPoints;
+                stats.stats[statIndex] = current + uint8(allocation);
+                remainingPoints -= allocation;
             }
-       }
-       
-       // Second pass for remaining points, fallback balancing (+1 per Cycle Pity)
-       while (remainingPoints > 0) {
-           for (uint i = 0; i < 8 && remainingPoints > 0; i++) {
-               uint8 statIndex = statOrder[i];
-               uint8 current = stats.stats[statIndex];
-               uint8 maxAdd = config.maxStats[statIndex] - current;
-               
-               if (maxAdd == 0) continue;
+        }
 
-               uint8 alloc = 1;
-               stats.stats[statIndex] = current + alloc;
-               remainingPoints -= alloc;
-           }
-       }
- 
-        return stats;
+        while (remainingPoints > 0) {
+            for (uint8 i = 0; i < 8 && remainingPoints > 0; ++i) {
+                uint8 statIndex = statOrder[i];
+                if (stats.stats[statIndex] >= config.maxStats[statIndex]) continue;
+                ++stats.stats[statIndex];
+                --remainingPoints;
+            }
+        }
     }
 
-    //.. Helper function to generate allocation order [Used on _allocateStats]
     function _generateAllocationOrder(bytes32 seed) private pure returns (uint8[8] memory order) {
-        order = [0,1,2,3,4,5,6,7]; // STR,INT,AGI,DEX,VIT,WIS,SPD,STA
-        // Fisher-Yates shuffle
-        for (uint8 i = 7; i > 0; i--) {
-            uint8 selector = uint8(seed[i]);
-            uint8 j = selector % (i + 1);
-            (order[i], order[j]) = (order[j], order[i]);
-        }
-    }
-
-    //.. Helper function to generate Bytes order [Used on _allocateStats]
-    function _generateBytesOrder(bytes32 seed) private pure returns (uint8[32] memory order) {
-        // Array itternation with 0 to 31
-        for (uint8 i = 0; i < 32; i++) {
-            order[i] = i;
-        }
-
-        // Fisher-Yates shuffle using 32 bytes of Seed
-        for (uint8 i = 31; i > 0; i--) {
+        order = [0, 1, 2, 3, 4, 5, 6, 7];
+        for (uint8 i = 7; i > 0; --i) {
             uint8 j = uint8(seed[i]) % (i + 1);
             (order[i], order[j]) = (order[j], order[i]);
         }
     }
 
-    /// Admin function to update rarity chances
-    function setRarityChances(
-        uint256 _common,
-        uint256 _uncommon,
-        uint256 _rare,
-        uint256 _epic,
-        uint256 _legend
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(_common + _uncommon + _rare + _epic + _legend == 10000, "Chances must sum to 10000");
-
-        commonChance = _common;
-        uncommonChance = _uncommon;
-        rareChance = _rare;
-        epicChance = _epic;
-        legendChance = _legend;
-    }
-
-    /// Admin function to update mint price
-    function setMintPrice(uint256 _mintPrice) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        mintPrice = _mintPrice;
-    }
-
-    /// Withdraw accumulated mint revenue and any directly received native funds.
-    function withdraw() external onlyOwner nonReentrant {
-        address payable recipient = payable(owner());
-        uint256 amount = address(this).balance;
-        require(amount > 0, "No funds");
-
-        (bool sent, ) = recipient.call{value: amount}("");
-        require(sent, "Withdrawal failed");
-        emit NativeFundsWithdrawn(recipient, amount);
-    }
-
-    /// Entropy Override
-    function getEntropy() internal view override returns (address) {
-        return address(entropy);
+    function _generateBytesOrder(bytes32 seed) private pure returns (uint8[32] memory order) {
+        for (uint8 i = 0; i < 32; ++i) order[i] = i;
+        for (uint8 i = 31; i > 0; --i) {
+            uint8 j = uint8(seed[i]) % (i + 1);
+            (order[i], order[j]) = (order[j], order[i]);
+        }
     }
 }

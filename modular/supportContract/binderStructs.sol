@@ -79,7 +79,7 @@ library binderStructs {
     struct ClassMeta {
         uint256 classId;
         string name;
-        string rarity;
+        uint8 rarityId;
     }
 
     struct ClassPair {
@@ -98,9 +98,19 @@ library binderStructs {
     struct NFTMetadata {
         string name;
         uint256 classId;
-        string rarity;
+        uint8 rarityId;
         StaticStats staticStats;
         DynamicStats dynamicStats;
         uint16 configVersion;           // Version of Config that unit is currently on [Check : classVersion for global variable]
+    }
+
+    /// @notice Class-level event-mint availability. Nation rotation, when present,
+    /// advances in fixed timestamp slots from startTime; calendar recurrence is
+    /// deliberately outside this model.
+    struct EventMintSchedule {
+        bool enabled;
+        uint48 startTime;
+        uint48 endTime;
+        uint32 slotDuration;
     }
 }

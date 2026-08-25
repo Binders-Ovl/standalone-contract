@@ -157,7 +157,7 @@ contract ScaleOfBalance is AccessControl {
     }
 
     // 2. Add new Class Function
-    function addNewClass(uint256 classId, string calldata name, string calldata rarity, binderStructs.ClassConfig calldata config) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function addNewClass(uint256 classId, string calldata name, uint8 rarityId, binderStructs.ClassConfig calldata config) external onlyRole(DEFAULT_ADMIN_ROLE) {
         // Requirement and Rules
         require(classId != 0, "Invalid classId");
         require(bytes(book0fLife.getClassName(classId)).length == 0, "Class already exists");
@@ -173,13 +173,52 @@ contract ScaleOfBalance is AccessControl {
         // Ensure the configuration provides meaningful stat distribution space by Gating the possible Total point to be 2/3 max of Maximum all Stats
         require(config.totalPoints <= (totalDelta * 67) / 100, "totalPoints must be Lower than sum of stat deltas");
 
-        book0fLife.addNewClass(classId, name, rarity, config, 1);
+        book0fLife.addNewClass(classId, name, rarityId, config, 1);
         binderData.setClassVersion(classId, 1);
     }
 
-    /// @dev Transitional wrapper for assigning a Book rarity/pool ID.
-    function setClassRarityId(uint256 classId, uint16 rarityId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setClassRarityId(uint256 classId, uint8 rarityId) external onlyRole(DEFAULT_ADMIN_ROLE) {
         book0fLife.setClassRarityId(classId, rarityId);
+    }
+
+    function registerRarity(uint8 rarityId, string calldata displayName) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        book0fLife.registerRarity(rarityId, displayName);
+    }
+
+    function setRarityName(uint8 rarityId, string calldata displayName) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        book0fLife.setRarityName(rarityId, displayName);
+    }
+
+    function setBookAllegianceRegistry(address registry) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        book0fLife.setAllegianceRegistry(registry);
+    }
+
+    function assignClassToNation(uint256 classId, uint8 nationId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        book0fLife.assignClassToNation(classId, nationId);
+    }
+
+    function removeClassFromNation(uint256 classId, uint8 nationId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        book0fLife.removeClassFromNation(classId, nationId);
+    }
+
+    function setClassAcquisitionFlags(uint256 classId, uint32 flags) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        book0fLife.setClassAcquisitionFlags(classId, flags);
+    }
+
+    function enableClassAcquisition(uint256 classId, uint32 flagMask) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        book0fLife.enableClassAcquisition(classId, flagMask);
+    }
+
+    function disableClassAcquisition(uint256 classId, uint32 flagMask) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        book0fLife.disableClassAcquisition(classId, flagMask);
+    }
+
+    function setEventMintSchedule(uint256 classId, binderStructs.EventMintSchedule calldata schedule) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        book0fLife.setEventMintSchedule(classId, schedule);
+    }
+
+    function setEventNationRotation(uint256 classId, uint8[] calldata nationIds) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        book0fLife.setEventNationRotation(classId, nationIds);
     }
 
     function _getSyncedClassVersion(uint256 classId) internal view returns (uint16) {

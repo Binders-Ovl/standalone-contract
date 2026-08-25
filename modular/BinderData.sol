@@ -47,8 +47,8 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     mapping(uint256 => uint16) public classVersion;             // Mapping to store classVersion for each Class [Not individual NFT, check configVersion for local variable]
 
     // ==== ---- Events ---- ====
-    event NFTMinted(address indexed owner, uint256 tokenId, string rarity, string className);
-    event NFTFusionMinted(address indexed owner, uint256 tokenId, string rarity, string className);
+    event NFTMinted(address indexed owner, uint256 tokenId, uint8 rarityId, string rarity, string className);
+    event NFTFusionMinted(address indexed owner, uint256 tokenId, uint8 rarityId, string rarity, string className);
     event SupplyAdded(uint256 indexed amount);
     event NFTStatsUpdated(uint256 indexed tokenId, uint8[8] newStats, uint16 latestVersion);
 
@@ -76,7 +76,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         address recipient,
         uint256 classId,
         string memory className,
-        string memory rarity,
+        uint8 rarityId,
         binderStructs.StaticStats memory staticStats,
         binderStructs.DynamicStats memory dynamicStats,
         uint16 configVersion
@@ -91,15 +91,13 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
             emit SupplyAdded(supplyIncrement);
         }
 
-        // TODO: Add check for rarity (Common, Uncommon, Rare, Epic, Legend) --> moved to Logic
-
         uint256 tokenId = _tokenIdCounter++;
         _safeMint(recipient, tokenId);
 
         _tokenMetadata[tokenId] = binderStructs.NFTMetadata({
             name: string(abi.encodePacked(className, "#", Strings.toString(tokenId))),
             classId: classId,
-            rarity: rarity,
+            rarityId: rarityId,
             staticStats: staticStats,
             dynamicStats: dynamicStats,
             configVersion: configVersion
@@ -114,13 +112,14 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         address recipient,
         uint256 classId,
         string memory className,
-        string memory rarity,
+        uint8 rarityId,
+        string memory rarityName,
         binderStructs.StaticStats memory staticStats,
         binderStructs.DynamicStats memory dynamicStats
     ) external onlyRole(MINTER_ROLE) returns (uint256) {
         uint16 version = classVersion[classId]; //
-        uint256 tokenId = _mintNFT(recipient, classId, className, rarity, staticStats, dynamicStats, version);
-        emit NFTMinted(recipient, tokenId, rarity, className);
+        uint256 tokenId = _mintNFT(recipient, classId, className, rarityId, staticStats, dynamicStats, version);
+        emit NFTMinted(recipient, tokenId, rarityId, rarityName, className);
         return tokenId;
     }
 
@@ -129,13 +128,14 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         address recipient,
         uint256 classId,
         string memory className,
-        string memory rarity,
+        uint8 rarityId,
+        string memory rarityName,
         binderStructs.StaticStats memory staticStats,
         binderStructs.DynamicStats memory dynamicStats
     ) external onlyRole(FUSION_ROLE) returns (uint256) {
         uint16 version = classVersion[classId]; //
-        uint256 tokenId = _mintNFT(recipient, classId, className, rarity, staticStats, dynamicStats, version);
-        emit NFTFusionMinted(recipient, tokenId, rarity, className);
+        uint256 tokenId = _mintNFT(recipient, classId, className, rarityId, staticStats, dynamicStats, version);
+        emit NFTFusionMinted(recipient, tokenId, rarityId, rarityName, className);
         return tokenId;
     }
 
@@ -233,11 +233,11 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         return _tokenMetadata[tokenId].classId;
     }
 
-    function getNFTRarity(uint256 tokenId) external view returns (string memory) {
+    function getNFTRarityId(uint256 tokenId) external view returns (uint8) {
         if (!_exists(tokenId)){
             revert InvalidToken(tokenId);
         }
-        return _tokenMetadata[tokenId].rarity;
+        return _tokenMetadata[tokenId].rarityId;
     }
 
     // Getter functions for configVersion
