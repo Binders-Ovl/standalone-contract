@@ -12,14 +12,20 @@ contract BinderBattleManager is AccessControl {
     constructor(address _binderData) {
         binderData = BinderData(_binderData);
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(binderData.BATTLE_ROLE(), address(this)); // Grants self role
+        // BinderData BATTLE_ROLE must be granted to this deployed manager on
+        // BinderData itself by the deployment/runtime role configurator.
     }
 
+    /// @dev ACTIVITY / CUSTODY INTEGRATION INVARIANT
+    /// A future BattleProxy that takes custody must transfer an Idle, ReadyToArm
+    /// Binder into custody first, then call BinderData.startActivity in the same
+    /// transaction. On exit it must call endActivity before returning the NFT.
+    /// This stat manager does not take custody and must not bypass those rules.
+
     /// @notice Applies damage to NFT and triggers state updates
-    function applyDamage( uint256 tokenId, uint16 hpDamage, uint16 mpDamage
-    ) external onlyRole(BATTLE_ROLE) {
+    function applyDamage(uint256 tokenId, uint16 hpDamage, uint16 mpDamage) external onlyRole(BATTLE_ROLE) {
         binderStructs.NFTMetadata memory meta = binderData.getNFTDetails(tokenId);
-        
+
         uint16 newHP = _safeSub(meta.dynamicStats.currentHP, hpDamage);
         uint16 newMP = _safeSub(meta.dynamicStats.currentMP, mpDamage);
 
@@ -28,40 +34,35 @@ contract BinderBattleManager is AccessControl {
     }
 
     /// @notice Applies heal and damage to NFT and triggers state updates
-    function applySkill( uint256 tokenId, uint16 hpHeal, uint16 mpHeal, uint16 hpDamage, uint16 mpDamage
-    ) external onlyRole(BATTLE_ROLE) {
+    function applySkill(uint256 tokenId, uint16 hpHeal, uint16 mpHeal, uint16 hpDamage, uint16 mpDamage)
+        external
+        onlyRole(BATTLE_ROLE)
+    {
         binderStructs.NFTMetadata memory meta = binderData.getNFTDetails(tokenId);
 
-        uint16 newHP = _calculateStatChange(
-            meta.dynamicStats.currentHP,
-            hpHeal,
-            hpDamage,
-            meta.dynamicStats.maxHP
-        );
+        uint16 newHP = _calculateStatChange(meta.dynamicStats.currentHP, hpHeal, hpDamage, meta.dynamicStats.maxHP);
 
-        uint16 newMP = _calculateStatChange(
-            meta.dynamicStats.currentMP,
-            mpHeal,
-            mpDamage,
-            meta.dynamicStats.maxMP
-        );
+        uint16 newMP = _calculateStatChange(meta.dynamicStats.currentMP, mpHeal, mpDamage, meta.dynamicStats.maxMP);
 
         // BinderData handles state update
         binderData.updateCurrentStats(tokenId, newHP, newMP);
     }
 
     /// @dev Satats modifier for simplified calculations
-    /// @notice To be used while doing simple damage if it higher thn current hp return 0 (no negative), 
+    /// @notice To be used while doing simple damage if it higher thn current hp return 0 (no negative),
     /// else return current - damage
-    function _safeSub( uint16 current, uint16 sub) internal pure returns (uint16) {
+    function _safeSub(uint16 current, uint16 sub) internal pure returns (uint16) {
         return sub > current ? 0 : current - sub;
     }
 
     /// @dev Stats modifier for complex calculations
     /// @notice To be used while doing complex calculations that basically invovle skills modifier
     /// like healing, berserk, manaBurn, manaRegen, etc.
-    function _calculateStatChange( uint16 currentDynStat, uint16 heal, uint16 damage, uint16 maxDynStat
-    ) internal pure returns (uint16) {
+    function _calculateStatChange(uint16 currentDynStat, uint16 heal, uint16 damage, uint16 maxDynStat)
+        internal
+        pure
+        returns (uint16)
+    {
         uint256 healed = uint256(currentDynStat) + heal;
         uint256 healedCapped = healed > maxDynStat ? maxDynStat : healed;
         return _safeSub(uint16(healedCapped), damage);

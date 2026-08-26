@@ -8,20 +8,19 @@ import "@openzeppelin/contracts-4.8/access/AccessControl.sol";
 import "@openzeppelin/contracts-4.8/utils/Strings.sol";
 import "./supportContract/binderStructs.sol";
 
-/// Interface for BinderUriBldr
+/// @notice Minimal read-only metadata-renderer interface.
 interface IBinderUriBldr {
     function tokenURI(uint256 tokenId) external view returns (string memory);
 }
 
+/// @notice ERC-721 NFT-instance database and authoritative activity/transfer state.
 contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
-
-    // ==== ---- Roles ---- ====
     bytes32 public constant CONFIG_ROLE = keccak256("CONFIG_ROLE");
     bytes32 public constant BATTLE_ROLE = keccak256("BATTLE_ROLE");
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant FUSION_ROLE = keccak256("FUSION_ROLE");
+    bytes4 public constant ERC4906_INTERFACE_ID = 0x49064906;
 
-    // ==== ---- Error Handling ---- ====
     error InvalidUriFormat();
     error MaxSupplyReached();
     error InvalidToken(uint256 tokenId);
@@ -31,37 +30,51 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     error InvalidClassId();
     error InvalidNewVersionTooHigh();
     error GraveyardNotSet();
+    error TokenBusy(uint256 tokenId, uint8 activityId);
+    error UnitNotReadyToArm(uint256 tokenId);
+    error UnitAlreadyIdle(uint256 tokenId);
+    error InvalidActivityId(uint8 activityId);
+    error ActivityControllerNotSet(uint8 activityId);
+    error UnauthorizedActivityController(uint8 activityId, address caller);
+    error TokenInGraveyard(uint256 tokenId);
+    error UnauthorizedGraveyardTransfer(uint256 tokenId);
 
-    // ==== ---- State Variables ---- =====
-    uint256 public maxSupply = 1000000;  // Fake supply, as it expected to grow currently set to  1,000,000
+    uint256 public maxSupply = 1_000_000;
     uint128 internal supplyBuffer = 125;
-    uint256 internal supplyIncrement = 10000;
+    uint256 internal supplyIncrement = 10_000;
     uint128 private _tokenIdCounter = 1;
 
     string public baseImageURI;
-    address public binderGraveyard;     //  Address of BinderGraveyard.sol
-    address public binderUriBldrAddress; // Address of Binder NFT Decripter (BinderUriBldr.sol)
+    address public binderGraveyard;
+    address public binderUriBldrAddress;
 
-    // Mapping to store NFT Metadata
     mapping(uint256 => binderStructs.NFTMetadata) private _tokenMetadata;
-    mapping(uint256 => uint16) public classVersion;             // Mapping to store classVersion for each Class [Not individual NFT, check configVersion for local variable]
+    mapping(uint256 => uint16) public classVersion;
+    mapping(uint256 => binderStructs.ActivityState) private _activityState;
+    mapping(uint8 => address) private _activityController;
+    bool private _graveyardTransferInProgress;
 
-    // ==== ---- Events ---- ====
     event NFTMinted(address indexed owner, uint256 tokenId, uint8 rarityId, string rarity, string className);
     event NFTFusionMinted(address indexed owner, uint256 tokenId, uint8 rarityId, string rarity, string className);
     event SupplyAdded(uint256 indexed amount);
     event NFTStatsUpdated(uint256 indexed tokenId, uint8[8] newStats, uint16 latestVersion);
+    event ActivityControllerUpdated(
+        uint8 indexed activityId, address indexed oldController, address indexed newController
+    );
+    event ActivityStarted(uint256 indexed tokenId, uint8 indexed activityId, uint48 lockedUntil);
+    event ActivityEnded(uint256 indexed tokenId, uint8 indexed activityId);
+    event ActivityForceCleared(uint256 indexed tokenId, uint8 indexed activityId, address indexed admin);
+    event ActivityClearedForGraveyard(uint256 indexed tokenId, uint8 indexed activityId);
+    event MetadataUpdate(uint256 tokenId);
+    event BatchMetadataUpdate(uint256 fromTokenId, uint256 toTokenId);
 
     constructor(address initialOwner, string memory newBaseImageURI) ERC721("Binders", "UBIND") {
-        if (bytes(newBaseImageURI).length > 0 && bytes(newBaseImageURI)[bytes(newBaseImageURI).length - 1] != '/'){
+        if (bytes(newBaseImageURI).length > 0 && bytes(newBaseImageURI)[bytes(newBaseImageURI).length - 1] != "/") {
             revert InvalidUriFormat();
         }
+        require(initialOwner != address(0), "Invalid owner");
         baseImageURI = newBaseImageURI;
-
-        // Ownable initially assigns ownership to the deployer; align it with
-        // the configured administrator and role recipient.
         transferOwnership(initialOwner);
-
         _grantRole(DEFAULT_ADMIN_ROLE, initialOwner);
         _grantRole(CONFIG_ROLE, initialOwner);
         _grantRole(BATTLE_ROLE, initialOwner);
@@ -69,23 +82,10 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         _grantRole(FUSION_ROLE, initialOwner);
     }
 
-    // ===== ---- Core Minting Function ---- ====
-    /// ================= Internal Mint =================
+    // === Minting ===
 
-    function _mintNFT(
-        address recipient,
-        uint256 classId,
-        string memory className,
-        uint8 rarityId,
-        binderStructs.StaticStats memory staticStats,
-        binderStructs.DynamicStats memory dynamicStats,
-        uint16 configVersion
-    ) internal returns (uint256) {
-
-        if (_tokenIdCounter > maxSupply){
-            revert MaxSupplyReached();
-        }
-        // Auto increment maxSupply when near the end
+    function _mintNFT(address recipient, binderStructs.NFTMetadata memory metadata) internal returns (uint256) {
+        if (_tokenIdCounter > maxSupply) revert MaxSupplyReached();
         if (maxSupply - _tokenIdCounter <= supplyBuffer) {
             maxSupply += supplyIncrement;
             emit SupplyAdded(supplyIncrement);
@@ -93,21 +93,28 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
 
         uint256 tokenId = _tokenIdCounter++;
         _safeMint(recipient, tokenId);
+        metadata.name = string(abi.encodePacked(metadata.name, "#", Strings.toString(tokenId)));
+        _tokenMetadata[tokenId] = metadata;
+        return tokenId;
+    }
 
-        _tokenMetadata[tokenId] = binderStructs.NFTMetadata({
-            name: string(abi.encodePacked(className, "#", Strings.toString(tokenId))),
+    function _buildMintMetadata(
+        uint256 classId,
+        string memory className,
+        uint8 rarityId,
+        binderStructs.StaticStats memory staticStats,
+        binderStructs.DynamicStats memory dynamicStats
+    ) internal view returns (binderStructs.NFTMetadata memory) {
+        return binderStructs.NFTMetadata({
+            name: className,
             classId: classId,
             rarityId: rarityId,
             staticStats: staticStats,
             dynamicStats: dynamicStats,
-            configVersion: configVersion
+            configVersion: classVersion[classId]
         });
-
-        return tokenId;
     }
 
-    /// ================= Minting function and fusion  =================
-    // External Minting Function to be called by BinderMinter.sol
     function _mintRandomNFT(
         address recipient,
         uint256 classId,
@@ -117,13 +124,12 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         binderStructs.StaticStats memory staticStats,
         binderStructs.DynamicStats memory dynamicStats
     ) external onlyRole(MINTER_ROLE) returns (uint256) {
-        uint16 version = classVersion[classId]; //
-        uint256 tokenId = _mintNFT(recipient, classId, className, rarityId, staticStats, dynamicStats, version);
+        uint256 tokenId =
+            _mintNFT(recipient, _buildMintMetadata(classId, className, rarityId, staticStats, dynamicStats));
         emit NFTMinted(recipient, tokenId, rarityId, rarityName, className);
         return tokenId;
     }
 
-    // External Minting Function to be called by FusionMinter.sol
     function _mint4Fusion(
         address recipient,
         uint256 classId,
@@ -133,168 +139,189 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         binderStructs.StaticStats memory staticStats,
         binderStructs.DynamicStats memory dynamicStats
     ) external onlyRole(FUSION_ROLE) returns (uint256) {
-        uint16 version = classVersion[classId]; //
-        uint256 tokenId = _mintNFT(recipient, classId, className, rarityId, staticStats, dynamicStats, version);
+        uint256 tokenId =
+            _mintNFT(recipient, _buildMintMetadata(classId, className, rarityId, staticStats, dynamicStats));
         emit NFTFusionMinted(recipient, tokenId, rarityId, rarityName, className);
         return tokenId;
     }
 
-    /// End of Core Minting Function
-    /// ================= Update NFT Stats =================
+    // === Authoritative activity state ===
 
-    // =======------- Stats Update for Balancing thru Scale0fBalance.sol,
-    // =======------- triggered after Library0fCreation.sol updated
+    /// @notice Starts an activity for an Idle, current-version Binder.
+    /// @dev Soft activities retain player ownership. Custody activities must transfer
+    /// player -> controller first while Idle, then call this in the same transaction.
+    function startActivity(uint256 tokenId, uint8 activityId, uint48 lockedUntil) external {
+        _requireActivityController(activityId, msg.sender);
+        _requireCanStartActivity(tokenId);
+        _activityState[tokenId] = binderStructs.ActivityState({activityId: activityId, lockedUntil: lockedUntil});
+        emit ActivityStarted(tokenId, activityId, lockedUntil);
+        _emitMetadataUpdate(tokenId);
+    }
+
+    /// @notice Ends the caller's currently active activity. ReadyToArm is intentionally not checked on exit.
+    /// @dev Custody activities must call this before custody -> player transfer in the same transaction.
+    function endActivity(uint256 tokenId) external {
+        _requireToken(tokenId);
+        uint8 activityId = _activityState[tokenId].activityId;
+        if (activityId == 0) revert UnitAlreadyIdle(tokenId);
+        _requireActivityController(activityId, msg.sender);
+        delete _activityState[tokenId];
+        emit ActivityEnded(tokenId, activityId);
+        _emitMetadataUpdate(tokenId);
+    }
+
+    /// @notice Emergency recovery for an abandoned or faulty activity controller.
+    function forceClearActivity(uint256 tokenId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _requireToken(tokenId);
+        uint8 activityId = _activityState[tokenId].activityId;
+        if (activityId == 0) revert UnitAlreadyIdle(tokenId);
+        delete _activityState[tokenId];
+        emit ActivityForceCleared(tokenId, activityId, msg.sender);
+        _emitMetadataUpdate(tokenId);
+    }
+
+    function setActivityController(uint8 activityId, address controller) external onlyRole(CONFIG_ROLE) {
+        if (activityId == 0) revert InvalidActivityId(activityId);
+        if (controller == address(0)) revert ActivityControllerNotSet(activityId);
+        address oldController = _activityController[activityId];
+        _activityController[activityId] = controller;
+        emit ActivityControllerUpdated(activityId, oldController, controller);
+    }
+
+    // === Version/stat updates ===
+
+    /// @dev Defense in depth: a CONFIG_ROLE holder cannot reroll an active Binder.
     function updateNFTStats(
         uint256 tokenId,
         binderStructs.StaticStats calldata stats,
         binderStructs.DynamicStats calldata dynamicStats
     ) external onlyRole(CONFIG_ROLE) {
-        if (!_exists(tokenId)){
-            revert InvalidToken(tokenId);
-        }
+        _requireToken(tokenId);
+        if (!_isIdle(tokenId)) revert TokenBusy(tokenId, _activityState[tokenId].activityId);
 
         binderStructs.NFTMetadata storage meta = _tokenMetadata[tokenId];
-        uint256 classId = meta.classId;
-        uint16 latestVersion = classVersion[classId];
-
-        if (meta.configVersion >= latestVersion){
-            revert AlreadyUpgraded();
-        }
+        uint16 latestVersion = classVersion[meta.classId];
+        if (meta.configVersion >= latestVersion) revert AlreadyUpgraded();
 
         meta.staticStats = stats;
         meta.dynamicStats = dynamicStats;
-        meta.configVersion = classVersion[classId];
-
+        meta.configVersion = latestVersion;
         emit NFTStatsUpdated(tokenId, stats.stats, latestVersion);
+        _emitMetadataUpdate(tokenId);
     }
 
-    // ... Battle Logic Role
+    /// @notice Battle-state update. Frequent HP/MP changes deliberately do not emit ERC-4906 events.
     function updateCurrentStats(uint256 tokenId, uint16 currentHP, uint16 currentMP) external onlyRole(BATTLE_ROLE) {
-        if (!_exists(tokenId)){
-            revert InvalidToken(tokenId);
-        }
-
+        _requireToken(tokenId);
         binderStructs.NFTMetadata storage meta = _tokenMetadata[tokenId];
-
         meta.dynamicStats.currentHP = currentHP > meta.dynamicStats.maxHP ? meta.dynamicStats.maxHP : currentHP;
         meta.dynamicStats.currentMP = currentMP > meta.dynamicStats.maxMP ? meta.dynamicStats.maxMP : currentMP;
-
-        if (meta.dynamicStats.currentHP == 0) {
-            _autoTransferToGraveyard(tokenId);
-        }
+        if (meta.dynamicStats.currentHP == 0) _autoTransferToGraveyard(tokenId);
     }
 
-    // Management function for automatic retirement when an NFT reaches zero HP.
+    // === Graveyard ===
+
     function _autoTransferToGraveyard(uint256 tokenId) internal {
-        if (_tokenMetadata[tokenId].dynamicStats.currentHP != 0) {
-            revert NotDeadYet();
-        }
-
-        if (binderGraveyard == address(0)) {
-            revert GraveyardNotSet();
-        }
-
-        address owner = ownerOf(tokenId);
-        _transfer(owner, binderGraveyard, tokenId);
+        if (_tokenMetadata[tokenId].dynamicStats.currentHP != 0) revert NotDeadYet();
+        _moveToGraveyard(tokenId);
     }
 
-    // Explicit fusion retirement path. Fusion is authorized by FUSION_ROLE;
+    /// @notice Explicit fusion retirement path.
     function tfToGraveyard(uint256 tokenId) external onlyRole(FUSION_ROLE) {
-        if (binderGraveyard == address(0)) {
-            revert GraveyardNotSet();
-        }
-
-        address owner = ownerOf(tokenId);
-        _transfer(owner, binderGraveyard, tokenId);
+        _requireToken(tokenId);
+        _moveToGraveyard(tokenId);
     }
 
-    /// ================= tokenURI and Metadata =================
+    function _moveToGraveyard(uint256 tokenId) internal {
+        if (binderGraveyard == address(0)) revert GraveyardNotSet();
+        uint8 activityId = _activityState[tokenId].activityId;
+        if (activityId != 0) {
+            delete _activityState[tokenId];
+            emit ActivityClearedForGraveyard(tokenId, activityId);
+            _emitMetadataUpdate(tokenId);
+        }
 
-    // View functions to get NFT Metadata as JSON
+        _graveyardTransferInProgress = true;
+        _transfer(ownerOf(tokenId), binderGraveyard, tokenId);
+        _graveyardTransferInProgress = false;
+    }
+
+    // === ERC-721 metadata entrypoint ===
+
     function tokenURI(uint256 tokenId) public view override returns (string memory) {
-        if (!_exists(tokenId)){
-            revert InvalidToken(tokenId);
-        }
-        if (binderUriBldrAddress == address(0)){
-            revert UriBuilderNotSet();
-        }
-
+        _requireToken(tokenId);
+        if (binderUriBldrAddress == address(0)) revert UriBuilderNotSet();
         return IBinderUriBldr(binderUriBldrAddress).tokenURI(tokenId);
     }
 
-    // CL : _generateAtrributes moved BinderUriBldr.sol
+    // === Consolidated views ===
 
-    /// ======================= View Functions =======================
+    function getUnitState(uint256 tokenId) external view returns (binderStructs.UnitStateView memory) {
+        _requireToken(tokenId);
+        return binderStructs.UnitStateView({
+            readyToArm: _isReadyToArm(tokenId),
+            idle: _isIdle(tokenId),
+            transferable: _isProtocolTransferable(tokenId),
+            activity: _activityState[tokenId]
+        });
+    }
 
     function getNFTClass(uint256 tokenId) external view returns (uint256) {
-        if (!_exists(tokenId)){
-            revert InvalidToken(tokenId);
-        }
+        _requireToken(tokenId);
         return _tokenMetadata[tokenId].classId;
     }
 
     function getNFTRarityId(uint256 tokenId) external view returns (uint8) {
-        if (!_exists(tokenId)){
-            revert InvalidToken(tokenId);
-        }
+        _requireToken(tokenId);
         return _tokenMetadata[tokenId].rarityId;
     }
 
-    // Getter functions for configVersion
     function getConfigVersion(uint256 tokenId) external view returns (uint16) {
-       if (!_exists(tokenId)){
-            revert InvalidToken(tokenId);
-       }
-       return _tokenMetadata[tokenId].configVersion;
+        _requireToken(tokenId);
+        return _tokenMetadata[tokenId].configVersion;
     }
 
     function getNFTDetails(uint256 tokenId) external view returns (binderStructs.NFTMetadata memory) {
-        if (!_exists(tokenId)){
-            revert InvalidToken(tokenId);
-        }
+        _requireToken(tokenId);
         return _tokenMetadata[tokenId];
     }
 
-
-    /// ======================= Admin Functions =======================
-
-    // Admin function to set the address of binderUriBldr contract incase we introduce new parameters
-    function setBinderUriBldr (address _bldrAddress) external onlyOwner {
-        if (_bldrAddress == address(0)) {
-            revert UriBuilderNotSet();
-        }
-        binderUriBldrAddress = _bldrAddress;
+    function getActivityController(uint8 activityId) external view returns (address) {
+        return _activityController[activityId];
     }
 
-    // IPFS log to set base image URI, supposed to be "classId.gif"
+    // === Administration ===
+
+    function setBinderUriBldr(address builderAddress) external onlyOwner {
+        if (builderAddress == address(0)) revert UriBuilderNotSet();
+        binderUriBldrAddress = builderAddress;
+        _emitAllMetadataUpdate();
+    }
+
     function setBaseImageURI(string memory newURI) external onlyOwner {
-        if (bytes(newURI).length > 0 && bytes(newURI)[bytes(newURI).length-1] != '/'){
-            revert InvalidUriFormat();
-        }
+        if (bytes(newURI).length > 0 && bytes(newURI)[bytes(newURI).length - 1] != "/") revert InvalidUriFormat();
         baseImageURI = newURI;
+        _emitAllMetadataUpdate();
     }
 
-   // setter functions for Graveyard
-   function setGraveyard(address graveyard) external onlyOwner {
-       if (graveyard == address(0)) {
-           revert GraveyardNotSet();
-       }
-       binderGraveyard = graveyard;
-   }
+    function setGraveyard(address graveyard) external onlyOwner {
+        if (graveyard == address(0)) revert GraveyardNotSet();
+        binderGraveyard = graveyard;
+        _emitAllMetadataUpdate();
+    }
 
-    // Setter functions for setClassVersion to be called by Scale0fBalance.sol
     function setClassVersion(uint256 classId, uint16 version) external onlyRole(CONFIG_ROLE) {
-        if(classId == 0){
-            revert InvalidClassId();
-        }
-
-        if(version <= classVersion[classId]){
-            revert InvalidNewVersionTooHigh();
-        }
+        if (classId == 0) revert InvalidClassId();
+        if (version <= classVersion[classId]) revert InvalidNewVersionTooHigh();
         classVersion[classId] = version;
+        _emitAllMetadataUpdate();
     }
 
-    // Pause and Unpause
+    /// @notice Signals presentation changes made in dependent configuration contracts, e.g. rarity/activity labels.
+    function refreshAllMetadata() external onlyRole(CONFIG_ROLE) {
+        _emitAllMetadataUpdate();
+    }
+
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
     }
@@ -303,28 +330,63 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         _unpause();
     }
 
-    // Override required functions from OpenZeppelin Contracts
+    // === Internal state / transfer enforcement ===
+
+    function _requireCanStartActivity(uint256 tokenId) internal view {
+        _requireToken(tokenId);
+        if (!_isIdle(tokenId)) revert TokenBusy(tokenId, _activityState[tokenId].activityId);
+        if (!_isReadyToArm(tokenId)) revert UnitNotReadyToArm(tokenId);
+        if (binderGraveyard != address(0) && ownerOf(tokenId) == binderGraveyard) revert TokenInGraveyard(tokenId);
+    }
+
+    function _requireActivityController(uint8 activityId, address caller) internal view {
+        if (activityId == 0) revert InvalidActivityId(activityId);
+        address controller = _activityController[activityId];
+        if (controller == address(0)) revert ActivityControllerNotSet(activityId);
+        if (caller != controller) revert UnauthorizedActivityController(activityId, caller);
+    }
+
+    function _isReadyToArm(uint256 tokenId) internal view returns (bool) {
+        binderStructs.NFTMetadata storage meta = _tokenMetadata[tokenId];
+        return meta.configVersion == classVersion[meta.classId];
+    }
+
+    function _isIdle(uint256 tokenId) internal view returns (bool) {
+        return _activityState[tokenId].activityId == 0;
+    }
+
+    function _isProtocolTransferable(uint256 tokenId) internal view returns (bool) {
+        if (!_isIdle(tokenId) || paused()) return false;
+        return binderGraveyard == address(0) || ownerOf(tokenId) != binderGraveyard;
+    }
+
+    function _emitMetadataUpdate(uint256 tokenId) internal {
+        emit MetadataUpdate(tokenId);
+    }
+
+    function _emitAllMetadataUpdate() internal {
+        if (_tokenIdCounter > 1) emit BatchMetadataUpdate(1, _tokenIdCounter - 1);
+    }
+
+    /// @dev OpenZeppelin 4.8 transfer hook. There is intentionally no generic lock-bypass role.
     function _beforeTokenTransfer(address from, address to, uint256 tokenId, uint256 batchSize)
-        internal override(ERC721, ERC721Pausable)
+        internal
+        override(ERC721, ERC721Pausable)
     {
+        if (from != address(0)) {
+            if (from == binderGraveyard) revert TokenInGraveyard(tokenId);
+            uint8 activityId = _activityState[tokenId].activityId;
+            if (activityId != 0) revert TokenBusy(tokenId, activityId);
+        }
+        if (to == binderGraveyard && !_graveyardTransferInProgress) revert UnauthorizedGraveyardTransfer(tokenId);
         super._beforeTokenTransfer(from, to, tokenId, batchSize);
     }
 
-    /** I Use OpenZeppelin 4.8.3 this functions not exist there
-    function _update(address to, uint256 tokenId, address auth)
-        internal override(ERC721Enumerable, ERC721Pausable) returns (address){
-            if(to == binderGraveyard){
-                require(_tokenMetadata[tokenId].dynamicStats.currentHP == 0, "Not Dead Yet");
-            }
-            return super._update(to, tokenId, auth);
-        }
-     */
+    function _requireToken(uint256 tokenId) internal view {
+        if (!_exists(tokenId)) revert InvalidToken(tokenId);
+    }
 
-
-    function supportsInterface(bytes4 interfaceId)
-        public view override(ERC721, AccessControl)
-        returns (bool)
-    {
-        return super.supportsInterface(interfaceId);
+    function supportsInterface(bytes4 interfaceId) public view override(ERC721, AccessControl) returns (bool) {
+        return interfaceId == ERC4906_INTERFACE_ID || super.supportsInterface(interfaceId);
     }
 }

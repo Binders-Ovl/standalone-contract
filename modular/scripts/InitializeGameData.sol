@@ -25,22 +25,97 @@ contract InitializeGameData {
 
         // General members guarantee an unregistered wallet has one candidate per
         // enabled default rarity. The other classes demonstrate dedicated pools.
-        _addClass(book0fLife, binderData, 1, "Villager", 1, [5,5,5,5,5,5,5,5], [10,10,10,10,10,10,10,10], 26, 10, 8, 0);
-        _addClass(book0fLife, binderData, 2, "Squire", 2, [8,5,7,6,8,5,6,7], [15,10,12,11,15,10,11,12], 29, 12, 8, 0);
-        _addClass(book0fLife, binderData, 3, "Scout", 2, [5,7,10,10,6,7,10,7], [10,12,18,18,11,12,18,12], 32, 10, 10, 2);
-        _addClass(book0fLife, binderData, 4, "Knight", 3, [12,6,8,8,12,6,8,10], [20,12,15,15,20,12,15,18], 38, 15, 8, 0);
-        _addClass(book0fLife, binderData, 5, "PathFinder", 3, [8,10,12,12,8,10,12,8], [15,18,20,20,15,18,20,15], 40, 12, 12, 1);
-        _addClass(book0fLife, binderData, 6, "Ranger", 3, [8,8,12,12,8,10,12,10], [15,15,20,20,15,18,20,18], 40, 12, 12, 3);
+        _addClass(
+            book0fLife,
+            binderData,
+            1,
+            "Villager",
+            1,
+            [5, 5, 5, 5, 5, 5, 5, 5],
+            [10, 10, 10, 10, 10, 10, 10, 10],
+            26,
+            10,
+            8,
+            0
+        );
+        _addClass(
+            book0fLife,
+            binderData,
+            2,
+            "Squire",
+            2,
+            [8, 5, 7, 6, 8, 5, 6, 7],
+            [15, 10, 12, 11, 15, 10, 11, 12],
+            29,
+            12,
+            8,
+            0
+        );
+        _addClass(
+            book0fLife,
+            binderData,
+            3,
+            "Scout",
+            2,
+            [5, 7, 10, 10, 6, 7, 10, 7],
+            [10, 12, 18, 18, 11, 12, 18, 12],
+            32,
+            10,
+            10,
+            2
+        );
+        _addClass(
+            book0fLife,
+            binderData,
+            4,
+            "Knight",
+            3,
+            [12, 6, 8, 8, 12, 6, 8, 10],
+            [20, 12, 15, 15, 20, 12, 15, 18],
+            38,
+            15,
+            8,
+            0
+        );
+        _addClass(
+            book0fLife,
+            binderData,
+            5,
+            "PathFinder",
+            3,
+            [8, 10, 12, 12, 8, 10, 12, 8],
+            [15, 18, 20, 20, 15, 18, 20, 15],
+            40,
+            12,
+            12,
+            1
+        );
+        _addClass(
+            book0fLife,
+            binderData,
+            6,
+            "Ranger",
+            3,
+            [8, 8, 12, 12, 8, 10, 12, 10],
+            [15, 15, 20, 20, 15, 18, 20, 18],
+            40,
+            12,
+            12,
+            3
+        );
 
         uint256[] memory outputs = new uint256[](2);
         uint16[] memory chances = new uint16[](2);
-        outputs[0] = 2; outputs[1] = 3;
-        chances[0] = 8000; chances[1] = 2000;
+        outputs[0] = 2;
+        outputs[1] = 3;
+        chances[0] = 8000;
+        chances[1] = 2000;
         _setRecipe(book0fLife, 1, 1, outputs, chances, 7000);
 
         outputs = new uint256[](1);
         chances = new uint16[](1);
-        outputs[0] = 4; chances[0] = 10000;
+        outputs[0] = 4;
+        chances[0] = 10000;
         _setRecipe(book0fLife, 2, 2, outputs, chances, 6500);
 
         outputs[0] = 6;
@@ -72,6 +147,15 @@ contract InitializeGameData {
         binderData.grantRole(binderData.CONFIG_ROLE(), scaleOfBalanceAddr);
         book0fLife.changeFusionMinterRole(fusionMinterAddr);
         book0fLife.changeConfigRole(scaleOfBalanceAddr);
+    }
+
+    /// @notice Grants a deployed battle manager permission to mutate live HP/MP in BinderData.
+    /// @dev This helper contract must hold BinderData DEFAULT_ADMIN_ROLE. The BattleManager
+    /// constructor cannot grant a role on BinderData; it can only configure its own AccessControl state.
+    function configureBattleManagerRole(address binderAddr, address battleManagerAddr) external {
+        require(binderAddr != address(0) && battleManagerAddr != address(0), "Invalid address");
+        BinderData binderData = BinderData(binderAddr);
+        binderData.grantRole(binderData.BATTLE_ROLE(), battleManagerAddr);
     }
 
     function _registerInitialRarities(Book0fLife book) internal {

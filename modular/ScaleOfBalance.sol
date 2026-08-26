@@ -10,12 +10,18 @@ contract ScaleOfBalance is AccessControl {
     BinderData public binderData;
     Book0fLife public book0fLife;
 
-        // Events
-    event logClassConfigUpdated(string indexed className, binderStructs.ClassConfig indexed config, uint256 indexed timestamp, uint256 blockNumber);
-    event logFusionRecipeSet(uint256 class1, uint256 class2, uint256[] classIds, uint16[] multiProbChance, uint16 successChance);
+    // Events
+    event logClassConfigUpdated(
+        string indexed className,
+        binderStructs.ClassConfig indexed config,
+        uint256 indexed timestamp,
+        uint256 blockNumber
+    );
+    event logFusionRecipeSet(
+        uint256 class1, uint256 class2, uint256[] classIds, uint16[] multiProbChance, uint16 successChance
+    );
     event upgradeSuccesful(address indexed user, uint256 indexed tokenId);
     event upgradeFailed(address indexed user, uint256 indexed tokenId, string reason);
-
 
     constructor(address _binderData, address _book0fLife) {
         binderData = BinderData(_binderData);
@@ -31,12 +37,12 @@ contract ScaleOfBalance is AccessControl {
 
     // 2. Batch upgrade NFTs by user
     function batchUpgradeNFTs(uint256[] calldata tokenIds) external {
-        // -- Expecting specific list of token to upgrade 
+        // -- Expecting specific list of token to upgrade
         // ---- and the List shud be provided by game frontEnd!
         for (uint256 i = 0; i < tokenIds.length; i++) {
             uint256 tokenId = tokenIds[i];
 
-            try this.upgradeNFTFromBatch(msg.sender, tokenId){
+            try this.upgradeNFTFromBatch(msg.sender, tokenId) {
                 // Success
             } catch Error(string memory reason) {
                 // Failed
@@ -54,10 +60,10 @@ contract ScaleOfBalance is AccessControl {
         _upgradeNFTFor(user, tokenId);
     }
 
-
     // ================== CORE FUNCTIONALITY ==================
     function _upgradeNFTFor(address user, uint256 tokenId) internal {
         require(binderData.ownerOf(tokenId) == user, "Not owner");
+        require(binderData.getUnitState(tokenId).idle, "Unit is active");
 
         // Gatekeep Ready to Arm
         binderStructs.NFTMetadata memory meta = binderData.getNFTDetails(tokenId);
@@ -71,7 +77,8 @@ contract ScaleOfBalance is AccessControl {
 
     function _upgradeNFTInternal(uint256 tokenId, binderStructs.NFTMetadata memory meta) internal {
         // 1. Get the NFT's actual historical config and the current config
-        binderStructs.ClassConfig memory oldConfig = book0fLife.getClassConfigAtVersion(meta.classId, meta.configVersion);
+        binderStructs.ClassConfig memory oldConfig =
+            book0fLife.getClassConfigAtVersion(meta.classId, meta.configVersion);
         binderStructs.ClassConfig memory newConfig = book0fLife.getClassConfig(meta.classId);
 
         // 3. Calculate new stats
@@ -87,12 +94,8 @@ contract ScaleOfBalance is AccessControl {
                 meta.staticStats.stats
             )
         );
-        binderStructs.StaticStats memory newStats = _calculateStats(
-            oldConfig,
-            newConfig,
-            meta.staticStats,
-            redistributionSeed
-        );
+        binderStructs.StaticStats memory newStats =
+            _calculateStats(oldConfig, newConfig, meta.staticStats, redistributionSeed);
 
         // 4. Calculate new HP/MP with ratio preservation
         uint16 newMaxHP = uint16(newStats.stats[4]) * newConfig.hpPerVit;
@@ -108,19 +111,17 @@ contract ScaleOfBalance is AccessControl {
             currentMP: newCurrentMP
         });
         // 5. Update Base contract
-        binderData.updateNFTStats(
-            tokenId,
-            newStats,
-            dynStats
-        );
+        binderData.updateNFTStats(tokenId, newStats, dynStats);
     }
-
 
     // ================== ADMIN FUNCTIONS ==================
     // 1. Update Class Config and mirror to binderData && book0fLife
-    function updateClassConfig(uint256 classId, binderStructs.ClassConfig calldata newConfig) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function updateClassConfig(uint256 classId, binderStructs.ClassConfig calldata newConfig)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
         // Rules and requirements
-        require(classId !=0, "Invalid classId");
+        require(classId != 0, "Invalid classId");
         require(bytes(book0fLife.getClassName(classId)).length > 0, "Class does not exist");
 
         for (uint8 s = 0; s < 8; s++) {
@@ -132,13 +133,13 @@ contract ScaleOfBalance is AccessControl {
             totalDelta += (newConfig.maxStats[d] - newConfig.minStats[d]);
         }
         // Gating the possible Total point to be 2/3 max of Maximum all Stats
-        require(newConfig.totalPoints < (totalDelta * 67) / 100 , "totalPoints must be Lower than total delta");
+        require(newConfig.totalPoints < (totalDelta * 67) / 100, "totalPoints must be Lower than total delta");
 
         // Keep Book0fLife and BinderData synchronized; do not hide a desync.
         uint16 currentVersion = _getSyncedClassVersion(classId);
         require(currentVersion < type(uint16).max, "Version overflow");
         uint16 newVersion = currentVersion + 1;
-        
+
         // Push new config to base contract
         book0fLife.upgradeClassConfig(
             classId,
@@ -157,7 +158,12 @@ contract ScaleOfBalance is AccessControl {
     }
 
     // 2. Add new Class Function
-    function addNewClass(uint256 classId, string calldata name, uint8 rarityId, binderStructs.ClassConfig calldata config) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function addNewClass(
+        uint256 classId,
+        string calldata name,
+        uint8 rarityId,
+        binderStructs.ClassConfig calldata config
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         // Requirement and Rules
         require(classId != 0, "Invalid classId");
         require(bytes(book0fLife.getClassName(classId)).length == 0, "Class already exists");
@@ -187,6 +193,8 @@ contract ScaleOfBalance is AccessControl {
 
     function setRarityName(uint8 rarityId, string calldata displayName) external onlyRole(DEFAULT_ADMIN_ROLE) {
         book0fLife.setRarityName(rarityId, displayName);
+        // The rarity display name is renderer input for all matching NFTs.
+        binderData.refreshAllMetadata();
     }
 
     function setBookAllegianceRegistry(address registry) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -213,11 +221,17 @@ contract ScaleOfBalance is AccessControl {
         book0fLife.disableClassAcquisition(classId, flagMask);
     }
 
-    function setEventMintSchedule(uint256 classId, binderStructs.EventMintSchedule calldata schedule) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setEventMintSchedule(uint256 classId, binderStructs.EventMintSchedule calldata schedule)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
         book0fLife.setEventMintSchedule(classId, schedule);
     }
 
-    function setEventNationRotation(uint256 classId, uint8[] calldata nationIds) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setEventNationRotation(uint256 classId, uint8[] calldata nationIds)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
         book0fLife.setEventNationRotation(classId, nationIds);
     }
 
@@ -229,7 +243,13 @@ contract ScaleOfBalance is AccessControl {
     }
 
     // 3. SetFusionRecipe and its probability
-    function setFusionRecipe(uint256 class1, uint256 class2, uint256[] calldata classIds, uint16[] calldata multiProbChance, uint16 successChance) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setFusionRecipe(
+        uint256 class1,
+        uint256 class2,
+        uint256[] calldata classIds,
+        uint16[] calldata multiProbChance,
+        uint16 successChance
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         book0fLife.setFusionRecipe(class1, class2, classIds, multiProbChance, successChance);
         // Removed for now, @dev forget why he put it in first place
         // bytes32 ingredients = keccak256(abi.encodePacked(class1, class2));
@@ -248,20 +268,19 @@ contract ScaleOfBalance is AccessControl {
         uint256 allocatedPoints;
 
         // Phase 1: Linear scaling
-        for (uint i = 0; i < 8; i++) {
+        for (uint256 i = 0; i < 8; i++) {
             uint256 oldMin = oldConfig.minStats[i];
             uint256 oldMax = oldConfig.maxStats[i];
             uint256 newMin = newConfig.minStats[i];
             uint256 newMax = newConfig.maxStats[i];
 
-            if (oldMax <= oldMin) { // Edge Case handling just incase I messed up and make it have 0 scaling range
+            if (oldMax <= oldMin) {
+                // Edge Case handling just incase I messed up and make it have 0 scaling range
                 newStats.stats[i] = uint8(newMin);
             } else {
                 uint256 oldRange = oldMax - oldMin;
                 uint256 newRange = newMax - newMin;
-                uint256 oldExtra = uint256(oldStats.stats[i]) > oldMin
-                    ? uint256(oldStats.stats[i]) - oldMin
-                    : 0;
+                uint256 oldExtra = uint256(oldStats.stats[i]) > oldMin ? uint256(oldStats.stats[i]) - oldMin : 0;
                 uint256 scaledExtra = (oldExtra * newRange) / oldRange;
                 if (scaledExtra > newRange) scaledExtra = newRange;
                 newStats.stats[i] = uint8(newMin + scaledExtra);
@@ -276,13 +295,7 @@ contract ScaleOfBalance is AccessControl {
         bool addMode = delta > 0;
         uint256 remainingPoints = delta > 0 ? uint256(delta) : uint256(-delta);
         for (uint256 step = 0; step < remainingPoints; step++) {
-            uint8 statIndex = _selectRedistributionStat(
-                newStats,
-                newConfig,
-                addMode,
-                redistributionSeed,
-                step
-            );
+            uint8 statIndex = _selectRedistributionStat(newStats, newConfig, addMode, redistributionSeed, step);
 
             if (addMode) {
                 newStats.stats[statIndex]++;
@@ -337,11 +350,7 @@ contract ScaleOfBalance is AccessControl {
     }
 
     // ================== HELPER FUNCTIONS ==================
-    function _preserveRatio(
-        uint16 current,
-        uint16 oldMax,
-        uint16 newMax
-    ) internal pure returns (uint16) {
+    function _preserveRatio(uint16 current, uint16 oldMax, uint16 newMax) internal pure returns (uint16) {
         if (oldMax == 0 || current == 0) return 0;
         if (oldMax == newMax) return current;
         return uint16((uint256(current) * newMax) / oldMax);
