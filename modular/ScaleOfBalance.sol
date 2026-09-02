@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "./BinderData.sol";
-import "./Book0fLife.sol";
 import "./supportContract/binderStructs.sol";
 import "@openzeppelin/contracts-4.8/access/AccessControl.sol";
+import "./interfaces/IBinderData.sol";
+import "./interfaces/IBook0fLife.sol";
 
 contract ScaleOfBalance is AccessControl {
-    BinderData public binderData;
-    Book0fLife public book0fLife;
+    IBinderData public binderData;
+    IBook0fLife public book0fLife;
 
     // Events
     event logClassConfigUpdated(
@@ -24,8 +24,8 @@ contract ScaleOfBalance is AccessControl {
     event upgradeFailed(address indexed user, uint256 indexed tokenId, string reason);
 
     constructor(address _binderData, address _book0fLife) {
-        binderData = BinderData(_binderData);
-        book0fLife = Book0fLife(_book0fLife);
+        binderData = IBinderData(_binderData);
+        book0fLife = IBook0fLife(_book0fLife);
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
     }
 

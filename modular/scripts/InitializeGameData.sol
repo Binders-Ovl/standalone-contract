@@ -149,15 +149,6 @@ contract InitializeGameData {
         book0fLife.changeConfigRole(scaleOfBalanceAddr);
     }
 
-    /// @notice Grants a deployed battle manager permission to mutate live HP/MP in BinderData.
-    /// @dev This helper contract must hold BinderData DEFAULT_ADMIN_ROLE. The BattleManager
-    /// constructor cannot grant a role on BinderData; it can only configure its own AccessControl state.
-    function configureBattleManagerRole(address binderAddr, address battleManagerAddr) external {
-        require(binderAddr != address(0) && battleManagerAddr != address(0), "Invalid address");
-        BinderData binderData = BinderData(binderAddr);
-        binderData.grantRole(binderData.BATTLE_ROLE(), battleManagerAddr);
-    }
-
     function _registerInitialRarities(Book0fLife book) internal {
         book.registerRarity(1, "Common");
         book.registerRarity(2, "Uncommon");

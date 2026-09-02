@@ -134,4 +134,59 @@ library binderStructs {
         uint48 endTime;
         uint32 slotDuration;
     }
+
+    /// @notice One bounded structured component of a future Art formula.
+    /// @dev Appended as a new type only; no existing stored struct layout changes.
+    struct FormulaTerm {
+        uint8 sourceId;
+        uint8 statId;
+        int16 coefficientBps;
+    }
+
+    /// @notice Bounded generic formula data consumed later by ArtFormulaLib.
+    /// @dev `termCount` specifies the populated prefix of `terms`.
+    struct Formula {
+        uint8 formulaTypeId;
+        uint8 termCount;
+        FormulaTerm[8] terms;
+        int32 flatValue;
+    }
+
+    /// @notice Versioned reusable Art/Skill definition owned by Book0fArts.
+    struct ArtDefinition {
+        uint32 artId;
+        string name;
+        uint8 artTypeId;
+        uint16 hpCost;
+        uint16 mpCost;
+        uint8 effectTypeId;
+        uint8 patternTypeId;
+        uint16 range;
+        Formula primaryFormula;
+        Formula secondaryFormula;
+        uint32 requirementFlags;
+        uint8 ailmentId;
+        uint16 version;
+        bool enabled;
+    }
+
+    /// @notice Versioned rectangular-map header owned by Book0fRealms.
+    struct MapDefinition {
+        uint32 mapId;
+        string name;
+        uint16 width;
+        uint16 height;
+        uint16 version;
+        bool enabled;
+    }
+
+    /// @notice Canonical tile definition. Tile IDs are local to one map version.
+    struct TileDefinition {
+        uint16 tileId;
+        int16 elevation;
+        uint32 terrainTypeId;
+        uint32 terrainFlags;
+        bool walkable;
+        uint16 movementCost;
+    }
 }

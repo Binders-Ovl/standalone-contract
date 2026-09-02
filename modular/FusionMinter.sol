@@ -2,7 +2,6 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts-4.8/access/Ownable.sol";
-import "@openzeppelin/contracts-4.8/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts-4.8/token/ERC721/utils/ERC721Holder.sol";
 import "@openzeppelin/contracts-4.8/access/AccessControl.sol";
 import "@openzeppelin/contracts-4.8/security/Pausable.sol";
@@ -10,24 +9,8 @@ import "@openzeppelin/contracts-4.8/security/ReentrancyGuard.sol";
 import "@pythnetwork/entropy-sdk-solidity/IEntropyV2.sol";
 import "@pythnetwork/entropy-sdk-solidity/IEntropyConsumer.sol";
 import "./supportContract/binderStructs.sol";
-
-/** Interface to master Conctract --> BinderData.sol */
-interface IBinderData is IERC721 {
-    function _mint4Fusion(address recipient, uint256 classId, string memory className, uint8 rarityId, string memory rarityName, binderStructs.StaticStats memory staticStats, binderStructs.DynamicStats memory dynamicStats
-    ) external returns (uint256);
-    function tfToGraveyard(uint256 tokenId) external;
-    function getNFTClass(uint256 tokenId) external view returns (uint256);
-}
-
-/** Interface to FusionLibrary Contract --> Book0fLife.sol */
-interface IBook0fLife {
-    function getFusionRecipe(uint256 class1, uint256 class2) external view returns (binderStructs.FusionRecipe memory);
-    function getClassName(uint256 classId) external view returns (string memory);
-    function getClassConfig(uint256 classId) external view returns (binderStructs.ClassConfig memory);
-    function getClassRarityId(uint256 classId) external view returns (uint8);
-    function getRarityName(uint8 rarityId) external view returns (string memory);
-    function hasClassAcquisition(uint256 classId, uint32 flagMask) external view returns (bool);
-}
+import "./interfaces/IBinderData.sol";
+import "./interfaces/IBook0fLife.sol";
 
 /** Struct for Stats - Class Config - FUsionRequest */
 

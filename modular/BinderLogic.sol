@@ -7,31 +7,9 @@ import "@openzeppelin/contracts-4.8/security/ReentrancyGuard.sol";
 import "@pythnetwork/entropy-sdk-solidity/IEntropyConsumer.sol";
 import "@pythnetwork/entropy-sdk-solidity/IEntropyV2.sol";
 import "./supportContract/binderStructs.sol";
-
-interface IBinderDataMint {
-    function _mintRandomNFT(
-        address recipient,
-        uint256 classId,
-        string memory className,
-        uint8 rarityId,
-        string memory rarityName,
-        binderStructs.StaticStats memory staticStats,
-        binderStructs.DynamicStats memory dynamicStats
-    ) external returns (uint256);
-}
-
-interface IBook0fLifeMint {
-    function isRarityRegistered(uint8 rarityId) external view returns (bool);
-    function getClassName(uint256 classId) external view returns (string memory);
-    function getClassConfig(uint256 classId) external view returns (binderStructs.ClassConfig memory);
-    function getRarityName(uint8 rarityId) external view returns (string memory);
-    function getClassesByNationRarity(uint8 nationId, uint8 rarityId) external view returns (uint256[] memory);
-    function isClassMintEligible(uint256 classId, uint8 playerNationId) external view returns (bool);
-}
-
-interface IAllegianceRegistryMint {
-    function getPlayerNation(address player) external view returns (uint8);
-}
+import "./interfaces/IBinderData.sol";
+import "./interfaces/IBook0fLife.sol";
+import "./interfaces/IAllegianceRegistry.sol";
 
 /// @notice Entropy-backed normal mint orchestration.
 /// @dev Nation state is only a per-request snapshot. AllegianceRegistry remains authoritative.
@@ -46,9 +24,9 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
 
     IEntropyV2 public entropy;
     address public provider;
-    IBinderDataMint public binderData;
-    IBook0fLifeMint public book0fLife;
-    IAllegianceRegistryMint public allegianceRegistry;
+    IBinderData public binderData;
+    IBook0fLife public book0fLife;
+    IAllegianceRegistry public allegianceRegistry;
 
     uint256 public mintPrice = 0.0125 ether;
     bytes32 public previousRandomNumber;
@@ -82,9 +60,9 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
         );
         entropy = IEntropyV2(entropyAddress);
         provider = providerAddress;
-        binderData = IBinderDataMint(binderDataAddress);
-        book0fLife = IBook0fLifeMint(book0fLifeAddress);
-        allegianceRegistry = IAllegianceRegistryMint(allegianceRegistryAddress);
+        binderData = IBinderData(binderDataAddress);
+        book0fLife = IBook0fLife(book0fLifeAddress);
+        allegianceRegistry = IAllegianceRegistry(allegianceRegistryAddress);
         transferOwnership(initialOwner);
         _grantRole(DEFAULT_ADMIN_ROLE, initialOwner);
 
@@ -164,7 +142,7 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
 
     function setAllegianceRegistry(address registry) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(registry != address(0), "Invalid registry");
-        allegianceRegistry = IAllegianceRegistryMint(registry);
+        allegianceRegistry = IAllegianceRegistry(registry);
         emit AllegianceRegistryUpdated(registry);
     }
 

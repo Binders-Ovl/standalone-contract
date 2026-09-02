@@ -3,10 +3,7 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts-4.8/access/AccessControl.sol";
 import "./supportContract/binderStructs.sol";
-
-interface IAllegianceRegistryBook {
-    function isNationRegistered(uint8 nationId) external view returns (bool);
-}
+import "./interfaces/IAllegianceRegistry.sol";
 
 /// @notice Canonical class configuration, rarity registry, and mint-pool index.
 /// @dev A class has one rarity but may belong to many non-General nation pools.
@@ -25,8 +22,10 @@ contract Book0fLife is AccessControl {
     mapping(uint256 => uint8) private _classRarityId;
     mapping(uint8 => string) private _rarityNames;
     mapping(uint8 => bool) private _rarityExists;
+    uint8[] private _allRarityIds;
     mapping(uint256 => mapping(uint16 => binderStructs.ClassConfig)) private _classConfigsByVersion;
     mapping(uint256 => mapping(uint16 => bool)) private _configVersionExists;
+    mapping(uint256 => uint16[]) private _classConfigVersions;
     mapping(uint256 => uint16) public classVersion;
 
     // nationId => rarityId => class IDs. Index values are index + 1 for O(1) removal.
@@ -41,6 +40,7 @@ contract Book0fLife is AccessControl {
 
     uint256[] private _allClassIds;
     mapping(uint256 => bool) private _classExists;
+    mapping(uint256 => bool) private _classEnabled;
     mapping(uint256 => uint256) private _classIndexPlusOne;
 
     binderStructs.ClassPair[] private _allFusionPairs;
@@ -50,13 +50,14 @@ contract Book0fLife is AccessControl {
 
     address public currentConfigAdmin;
     address public currentFusionMinter;
-    IAllegianceRegistryBook public allegianceRegistry;
+    IAllegianceRegistry public allegianceRegistry;
 
     event ConfigRoleChanged(address indexed triggeredBy, address indexed newConfigAdmin);
     event FusionMinterRoleChanged(address indexed triggeredBy, address indexed newFusionMinter);
     event AllegianceRegistryUpdated(address indexed registry);
     event RarityRegistered(uint8 indexed rarityId, string displayName);
     event RarityNameUpdated(uint8 indexed rarityId, string displayName);
+    event ClassEnabledChanged(uint256 indexed classId, bool enabled);
     event ClassRarityChanged(uint256 indexed classId, uint8 indexed oldRarityId, uint8 indexed newRarityId);
     event ClassNationAssigned(uint256 indexed classId, uint8 indexed nationId, uint8 rarityId);
     event ClassNationRemoved(uint256 indexed classId, uint8 indexed nationId, uint8 rarityId);
@@ -78,6 +79,24 @@ contract Book0fLife is AccessControl {
     error InvalidEventSchedule();
     error DuplicateRotationNation(uint8 nationId);
 
+    struct ClassImport {
+        uint256 classId;
+        string name;
+        uint8 rarityId;
+        binderStructs.ClassConfig config;
+        uint16 version;
+        bool enabled;
+        uint32 acquisitionFlags;
+    }
+
+    struct FusionRecipeImport {
+        uint256 class1;
+        uint256 class2;
+        uint256[] outcomeClassIds;
+        uint16[] outcomeWeights;
+        uint16 successChance;
+    }
+
     constructor() {
         address deployer = msg.sender;
         currentConfigAdmin = deployer;
@@ -91,16 +110,21 @@ contract Book0fLife is AccessControl {
 
     function setAllegianceRegistry(address registry) external onlyRole(CONFIG_ROLE) {
         require(registry != address(0), "Invalid registry");
-        allegianceRegistry = IAllegianceRegistryBook(registry);
+        allegianceRegistry = IAllegianceRegistry(registry);
         emit AllegianceRegistryUpdated(registry);
     }
 
     function registerRarity(uint8 rarityId, string calldata displayName) external onlyRole(CONFIG_ROLE) {
+        _registerRarity(rarityId, displayName);
+    }
+
+    function _registerRarity(uint8 rarityId, string memory displayName) internal {
         if (rarityId == 0) revert InvalidRarityId();
         if (_rarityExists[rarityId]) revert RarityAlreadyRegistered(rarityId);
         if (bytes(displayName).length == 0) revert EmptyDisplayName();
         _rarityExists[rarityId] = true;
         _rarityNames[rarityId] = displayName;
+        _allRarityIds.push(rarityId);
         emit RarityRegistered(rarityId, displayName);
     }
 
@@ -120,6 +144,18 @@ contract Book0fLife is AccessControl {
         binderStructs.ClassConfig calldata config,
         uint16 version
     ) external onlyRole(CONFIG_ROLE) {
+        _addNewClass(classId, name, rarityId, config, version, true, 0);
+    }
+
+    function _addNewClass(
+        uint256 classId,
+        string memory name,
+        uint8 rarityId,
+        binderStructs.ClassConfig memory config,
+        uint16 version,
+        bool enabled,
+        uint32 acquisitionFlags
+    ) internal {
         if (classId == 0) revert InvalidClassId();
         if (_classExists[classId]) revert ClassAlreadyExists(classId);
         _requireRarity(rarityId);
@@ -131,8 +167,11 @@ contract Book0fLife is AccessControl {
         _classRarityId[classId] = rarityId;
         _classConfigsByVersion[classId][version] = config;
         _configVersionExists[classId][version] = true;
+        _classConfigVersions[classId].push(version);
         classVersion[classId] = version;
         _classExists[classId] = true;
+        _classEnabled[classId] = enabled;
+        _classAcquisitionFlags[classId] = acquisitionFlags;
         _allClassIds.push(classId);
         _classIndexPlusOne[classId] = _allClassIds.length;
     }
@@ -155,10 +194,7 @@ contract Book0fLife is AccessControl {
             hpPerVit: hpPerVit,
             mpPerWis: mpPerWis
         });
-        _validateClassConfig(newConfig);
-        _classConfigsByVersion[classId][newVersion] = newConfig;
-        _configVersionExists[classId][newVersion] = true;
-        classVersion[classId] = newVersion;
+        _addClassConfigVersion(classId, newConfig, newVersion);
     }
 
     function setClassRarityId(uint256 classId, uint8 newRarityId) external onlyRole(CONFIG_ROLE) {
@@ -180,27 +216,85 @@ contract Book0fLife is AccessControl {
 
     function removeClass(uint256 classId) external onlyRole(CONFIG_ROLE) {
         _requireClass(classId);
-        uint8 rarityId = _classRarityId[classId];
-        uint8[] memory nations = _classNationMemberships[classId];
-        for (uint256 i = 0; i < nations.length; ++i) {
-            _removeClassFromPool(classId, nations[i], rarityId);
-            delete _classNationIndexPlusOne[classId][nations[i]];
-            emit ClassNationRemoved(classId, nations[i], rarityId);
+        // Stable class IDs may be referenced by live NFTs and recipes. Retain all
+        // records for migration/audit and deprecate instead of erasing history.
+        _classEnabled[classId] = false;
+        emit ClassEnabledChanged(classId, false);
+    }
+
+    function setClassEnabled(uint256 classId, bool enabled) external onlyRole(CONFIG_ROLE) {
+        _requireClass(classId);
+        _classEnabled[classId] = enabled;
+        emit ClassEnabledChanged(classId, enabled);
+    }
+
+    /// @notice Chunk-safe migration import for rarity display records.
+    function importRarities(uint8[] calldata rarityIds, string[] calldata displayNames) external onlyRole(CONFIG_ROLE) {
+        require(rarityIds.length == displayNames.length, "Mismatched rarities");
+        for (uint256 i; i < rarityIds.length; ++i) {
+            _registerRarity(rarityIds[i], displayNames[i]);
         }
-        delete _classNationMemberships[classId];
-        delete _classAcquisitionFlags[classId];
-        delete _eventMintSchedule[classId];
-        delete _eventNationRotation[classId];
-        delete _classNames[classId];
-        delete _classRarityId[classId];
-        delete classVersion[classId];
-        delete _classExists[classId];
-        _removeClassId(classId);
+    }
+
+    /// @notice Chunk-safe migration import for initial class records.
+    function importClasses(ClassImport[] calldata classes) external onlyRole(CONFIG_ROLE) {
+        for (uint256 i; i < classes.length; ++i) {
+            ClassImport calldata classImport = classes[i];
+            _addNewClass(
+                classImport.classId,
+                classImport.name,
+                classImport.rarityId,
+                classImport.config,
+                classImport.version,
+                classImport.enabled,
+                classImport.acquisitionFlags
+            );
+        }
+    }
+
+    /// @notice Chunk-safe import of additional immutable class-config history.
+    function importClassVersions(
+        uint256 classId,
+        uint16[] calldata versions,
+        binderStructs.ClassConfig[] calldata configs
+    ) external onlyRole(CONFIG_ROLE) {
+        _requireClass(classId);
+        require(versions.length == configs.length, "Mismatched versions");
+        for (uint256 i; i < versions.length; ++i) {
+            _addClassConfigVersion(classId, configs[i], versions[i]);
+        }
+    }
+
+    /// @notice Chunk-safe import of class-to-nation pool memberships.
+    function importClassNationMemberships(uint256[] calldata classIds, uint8[][] calldata nationIds)
+        external
+        onlyRole(CONFIG_ROLE)
+    {
+        require(classIds.length == nationIds.length, "Mismatched memberships");
+        for (uint256 i; i < classIds.length; ++i) {
+            for (uint256 j; j < nationIds[i].length; ++j) {
+                _assignClassToNation(classIds[i], nationIds[i][j]);
+            }
+        }
+    }
+
+    /// @notice Chunk-safe import of current fusion recipes.
+    function importFusionRecipes(FusionRecipeImport[] calldata recipes) external onlyRole(CONFIG_ROLE) {
+        for (uint256 i; i < recipes.length; ++i) {
+            FusionRecipeImport calldata recipe = recipes[i];
+            _setFusionRecipe(
+                recipe.class1, recipe.class2, recipe.outcomeClassIds, recipe.outcomeWeights, recipe.successChance
+            );
+        }
     }
 
     // === Nation / rarity pool membership ===
 
     function assignClassToNation(uint256 classId, uint8 nationId) external onlyRole(CONFIG_ROLE) {
+        _assignClassToNation(classId, nationId);
+    }
+
+    function _assignClassToNation(uint256 classId, uint8 nationId) internal {
         _requireClass(classId);
         _requirePoolNation(nationId);
         if (_classNationIndexPlusOne[classId][nationId] != 0) {
@@ -280,6 +374,7 @@ contract Book0fLife is AccessControl {
     /// @dev Pool membership is checked by BinderLogic, which only reads General and the snapshotted nation pool.
     function isClassMintEligible(uint256 classId, uint8 playerNationId) external view returns (bool) {
         _requireClass(classId);
+        if (!_classEnabled[classId]) return false;
         uint32 flags = _classAcquisitionFlags[classId];
         if ((flags & ACQ_NORMAL_MINT) != 0) return true;
         return _isClassEventMintEligible(classId, playerNationId, flags);
@@ -287,6 +382,7 @@ contract Book0fLife is AccessControl {
 
     function isClassEventMintEligible(uint256 classId, uint8 playerNationId) external view returns (bool) {
         _requireClass(classId);
+        if (!_classEnabled[classId]) return false;
         return _isClassEventMintEligible(classId, playerNationId, _classAcquisitionFlags[classId]);
     }
 
@@ -299,6 +395,16 @@ contract Book0fLife is AccessControl {
         uint16[] calldata multiProbChance,
         uint16 successChance
     ) external onlyRole(CONFIG_ROLE) {
+        _setFusionRecipe(class1, class2, classIds, multiProbChance, successChance);
+    }
+
+    function _setFusionRecipe(
+        uint256 class1,
+        uint256 class2,
+        uint256[] calldata classIds,
+        uint16[] calldata multiProbChance,
+        uint16 successChance
+    ) internal {
         _requireClass(class1);
         _requireClass(class2);
         require(successChance > 0 && successChance <= 10_000, "Invalid successChance");
@@ -363,6 +469,68 @@ contract Book0fLife is AccessControl {
         return rarityId != 0 && _rarityExists[rarityId];
     }
 
+    function getRarityCount() external view returns (uint256) {
+        return _allRarityIds.length;
+    }
+
+    function getRarityIdAt(uint256 index) external view returns (uint8) {
+        return _allRarityIds[index];
+    }
+
+    function getRarityIds(uint256 offset, uint256 limit) external view returns (uint8[] memory) {
+        return _pageRarityIds(offset, limit);
+    }
+
+    function getClassCount() external view returns (uint256) {
+        return _allClassIds.length;
+    }
+
+    function getClassIdAt(uint256 index) external view returns (uint256) {
+        return _allClassIds[index];
+    }
+
+    function getClassIds(uint256 offset, uint256 limit) external view returns (uint256[] memory) {
+        return _pageClassIds(offset, limit);
+    }
+
+    function isClassEnabled(uint256 classId) external view returns (bool) {
+        _requireClass(classId);
+        return _classEnabled[classId];
+    }
+
+    function getClassVersionCount(uint256 classId) external view returns (uint256) {
+        _requireClass(classId);
+        return _classConfigVersions[classId].length;
+    }
+
+    function getClassVersionAt(uint256 classId, uint256 index) external view returns (uint16) {
+        _requireClass(classId);
+        return _classConfigVersions[classId][index];
+    }
+
+    function getClassVersions(uint256 classId, uint256 offset, uint256 limit) external view returns (uint16[] memory) {
+        _requireClass(classId);
+        return _pageClassVersions(classId, offset, limit);
+    }
+
+    function getFusionPairCount() external view returns (uint256) {
+        return _allFusionPairs.length;
+    }
+
+    function getFusionPairAt(uint256 index) external view returns (binderStructs.ClassPair memory) {
+        return _allFusionPairs[index];
+    }
+
+    function getFusionPairs(uint256 offset, uint256 limit) external view returns (binderStructs.ClassPair[] memory) {
+        uint256 sourceLength = _allFusionPairs.length;
+        if (offset >= sourceLength || limit == 0) return new binderStructs.ClassPair[](0);
+        uint256 available = sourceLength - offset;
+        uint256 pageLength = limit < available ? limit : available;
+        binderStructs.ClassPair[] memory page = new binderStructs.ClassPair[](pageLength);
+        for (uint256 i; i < pageLength; ++i) page[i] = _allFusionPairs[offset + i];
+        return page;
+    }
+
     function getClassesByNationRarity(uint8 nationId, uint8 rarityId) external view returns (uint256[] memory) {
         return _classesByNationRarity[nationId][rarityId];
     }
@@ -384,7 +552,7 @@ contract Book0fLife is AccessControl {
 
     function hasClassAcquisition(uint256 classId, uint32 flagMask) external view returns (bool) {
         _requireClass(classId);
-        return (_classAcquisitionFlags[classId] & flagMask) != 0;
+        return _classEnabled[classId] && (_classAcquisitionFlags[classId] & flagMask) != 0;
     }
 
     function getEventMintSchedule(uint256 classId) external view returns (binderStructs.EventMintSchedule memory) {
@@ -474,6 +642,51 @@ contract Book0fLife is AccessControl {
     }
 
     // === Internal helpers ===
+
+    function _addClassConfigVersion(
+        uint256 classId,
+        binderStructs.ClassConfig memory config,
+        uint16 newVersion
+    ) internal {
+        _requireClass(classId);
+        require(newVersion > classVersion[classId], "Invalid version");
+        _validateClassConfig(config);
+        _classConfigsByVersion[classId][newVersion] = config;
+        _configVersionExists[classId][newVersion] = true;
+        _classConfigVersions[classId].push(newVersion);
+        classVersion[classId] = newVersion;
+    }
+
+    function _pageRarityIds(uint256 offset, uint256 limit) internal view returns (uint8[] memory) {
+        uint256 sourceLength = _allRarityIds.length;
+        if (offset >= sourceLength || limit == 0) return new uint8[](0);
+        uint256 available = sourceLength - offset;
+        uint256 pageLength = limit < available ? limit : available;
+        uint8[] memory page = new uint8[](pageLength);
+        for (uint256 i; i < pageLength; ++i) page[i] = _allRarityIds[offset + i];
+        return page;
+    }
+
+    function _pageClassIds(uint256 offset, uint256 limit) internal view returns (uint256[] memory) {
+        uint256 sourceLength = _allClassIds.length;
+        if (offset >= sourceLength || limit == 0) return new uint256[](0);
+        uint256 available = sourceLength - offset;
+        uint256 pageLength = limit < available ? limit : available;
+        uint256[] memory page = new uint256[](pageLength);
+        for (uint256 i; i < pageLength; ++i) page[i] = _allClassIds[offset + i];
+        return page;
+    }
+
+    function _pageClassVersions(uint256 classId, uint256 offset, uint256 limit) internal view returns (uint16[] memory) {
+        uint16[] storage versions = _classConfigVersions[classId];
+        uint256 sourceLength = versions.length;
+        if (offset >= sourceLength || limit == 0) return new uint16[](0);
+        uint256 available = sourceLength - offset;
+        uint256 pageLength = limit < available ? limit : available;
+        uint16[] memory page = new uint16[](pageLength);
+        for (uint256 i; i < pageLength; ++i) page[i] = versions[offset + i];
+        return page;
+    }
 
     function _isClassEventMintEligible(uint256 classId, uint8 playerNationId, uint32 flags) internal view returns (bool) {
         if ((flags & ACQ_EVENT_MINT) == 0) return false;

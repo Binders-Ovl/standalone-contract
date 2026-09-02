@@ -6,12 +6,10 @@ import "@openzeppelin/contracts-4.8/token/ERC721/extensions/ERC721Pausable.sol";
 import "@openzeppelin/contracts-4.8/access/Ownable.sol";
 import "@openzeppelin/contracts-4.8/access/AccessControl.sol";
 import "@openzeppelin/contracts-4.8/utils/Strings.sol";
+import "./supportContract/binderIds.sol";
 import "./supportContract/binderStructs.sol";
-
-/// @notice Minimal read-only metadata-renderer interface.
-interface IBinderUriBldr {
-    function tokenURI(uint256 tokenId) external view returns (string memory);
-}
+import "./interfaces/IBinderMetadata.sol";
+import "./interfaces/IBattleFactory.sol";
 
 /// @notice ERC-721 NFT-instance database and authoritative activity/transfer state.
 contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
@@ -19,6 +17,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     bytes32 public constant BATTLE_ROLE = keccak256("BATTLE_ROLE");
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant FUSION_ROLE = keccak256("FUSION_ROLE");
+    bytes32 public constant METADATA_REFRESH_ROLE = keccak256("METADATA_REFRESH_ROLE");
     bytes4 public constant ERC4906_INTERFACE_ID = 0x49064906;
 
     error InvalidUriFormat();
@@ -26,7 +25,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     error InvalidToken(uint256 tokenId);
     error AlreadyUpgraded();
     error NotDeadYet();
-    error UriBuilderNotSet();
+    error BinderMetadataNotSet();
     error InvalidClassId();
     error InvalidNewVersionTooHigh();
     error GraveyardNotSet();
@@ -38,6 +37,16 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     error UnauthorizedActivityController(uint8 activityId, address caller);
     error TokenInGraveyard(uint256 tokenId);
     error UnauthorizedGraveyardTransfer(uint256 tokenId);
+    error InvalidBattleFactory(address factory);
+    error BattleFactoryHasActiveEscrows(address factory, uint256 activeCount);
+    error UnauthorizedBattleFactory(address caller);
+    error InvalidBattleProxyRegistration(address battleProxy);
+    error BattleProxyMismatch(uint256 tokenId, address expectedProxy, address actualProxy);
+    error BattleTokenNotEscrowed(uint256 tokenId, address expectedProxy, address actualOwner);
+    error BattleActivityRequired(uint256 tokenId, uint8 activityId);
+    error InvalidBattleVitalsInput();
+    error StaleBattleCheckpoint(uint256 tokenId, uint32 currentNonce, uint32 providedNonce);
+    error BattleVitalsExceedMaximum(uint256 tokenId, uint16 currentHP, uint16 currentMP, uint16 maxHP, uint16 maxMP);
 
     uint256 public maxSupply = 1_000_000;
     uint128 internal supplyBuffer = 125;
@@ -46,7 +55,16 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
 
     string public baseImageURI;
     address public binderGraveyard;
-    address public binderUriBldrAddress;
+    address public binderMetadataAddress;
+    bool public battleCheckpointMetadataEnabled;
+
+    /// @dev An outgoing factory stays authorized only until its registered
+    /// fixed-code matches settle, enabling safe factory replacement.
+    mapping(address => bool) public authorizedBattleFactory;
+    mapping(address => uint256) public activeBattleCountByFactory;
+    mapping(address => address) public battleProxyFactory;
+    mapping(uint256 => address) public activeBattleProxy;
+    mapping(uint256 => uint32) public battleCheckpointNonce;
 
     mapping(uint256 => binderStructs.NFTMetadata) private _tokenMetadata;
     mapping(uint256 => uint16) public classVersion;
@@ -67,6 +85,11 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     event ActivityClearedForGraveyard(uint256 indexed tokenId, uint8 indexed activityId);
     event MetadataUpdate(uint256 tokenId);
     event BatchMetadataUpdate(uint256 fromTokenId, uint256 toTokenId);
+    event BattleFactoryAuthorizationUpdated(address indexed factory, bool authorized);
+    event BattleProxyRegistered(uint256 indexed tokenId, address indexed battleProxy, address indexed factory);
+    event BattleProxyCleared(uint256 indexed tokenId, address indexed battleProxy, address indexed factory);
+    event BattleVitalsCheckpointed(uint256 indexed tokenId, address indexed battleProxy, uint16 currentHP, uint16 currentMP, uint32 nonce);
+    event BattleVitalsSettled(uint256 indexed tokenId, address indexed battleProxy, uint16 currentHP, uint16 currentMP, uint32 nonce);
 
     constructor(address initialOwner, string memory newBaseImageURI) ERC721("Binders", "UBIND") {
         if (bytes(newBaseImageURI).length > 0 && bytes(newBaseImageURI)[bytes(newBaseImageURI).length - 1] != "/") {
@@ -80,6 +103,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         _grantRole(BATTLE_ROLE, initialOwner);
         _grantRole(MINTER_ROLE, initialOwner);
         _grantRole(FUSION_ROLE, initialOwner);
+        _grantRole(METADATA_REFRESH_ROLE, initialOwner);
     }
 
     // === Minting ===
@@ -219,6 +243,94 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         if (meta.dynamicStats.currentHP == 0) _autoTransferToGraveyard(tokenId);
     }
 
+    // === Narrow official BattleProxy lifecycle / persistence ===
+
+    /// @notice Approves a Factory to register official BattleProxy escrows.
+    /// @dev An outgoing factory cannot be removed until every registered clone
+    /// has settled, preserving old fixed-code matches through a factory cutover.
+    function setAuthorizedBattleFactory(address factory, bool authorized) external onlyRole(CONFIG_ROLE) {
+        if (authorized) {
+            if (factory.code.length == 0) revert InvalidBattleFactory(factory);
+        } else if (activeBattleCountByFactory[factory] != 0) {
+            revert BattleFactoryHasActiveEscrows(factory, activeBattleCountByFactory[factory]);
+        }
+        authorizedBattleFactory[factory] = authorized;
+        emit BattleFactoryAuthorizationUpdated(factory, authorized);
+    }
+
+    /// @notice Enables the canonical Factory gateway to bind a just-escrowed NFT to a recognized clone.
+    function registerBattleProxy(uint256 tokenId, address battleProxy) external {
+        _requireAuthorizedBattleFactory(msg.sender);
+        if (!IBattleFactory(msg.sender).isBattleProxy(battleProxy)) revert InvalidBattleProxyRegistration(battleProxy);
+        _requireToken(tokenId);
+        if (activeBattleProxy[tokenId] != address(0)) revert BattleProxyMismatch(tokenId, address(0), activeBattleProxy[tokenId]);
+        address owner = ownerOf(tokenId);
+        if (owner != battleProxy) revert BattleTokenNotEscrowed(tokenId, battleProxy, owner);
+        uint8 activityId = _activityState[tokenId].activityId;
+        if (activityId != BinderIds.ACTIVITY_BATTLE) revert BattleActivityRequired(tokenId, activityId);
+
+        activeBattleProxy[tokenId] = battleProxy;
+        battleProxyFactory[battleProxy] = msg.sender;
+        activeBattleCountByFactory[msg.sender] += 1;
+        emit BattleProxyRegistered(tokenId, battleProxy, msg.sender);
+    }
+
+    /// @notice Clears a binding immediately before the Factory ends activity for a survivor.
+    function clearBattleProxy(uint256 tokenId, address battleProxy) external {
+        _requireAuthorizedBattleFactory(msg.sender);
+        _requireBattleBinding(tokenId, battleProxy, msg.sender);
+        address owner = ownerOf(tokenId);
+        if (owner != battleProxy) revert BattleTokenNotEscrowed(tokenId, battleProxy, owner);
+        uint8 activityId = _activityState[tokenId].activityId;
+        if (activityId != BinderIds.ACTIVITY_BATTLE) revert BattleActivityRequired(tokenId, activityId);
+        _clearBattleBinding(tokenId, battleProxy, msg.sender);
+    }
+
+    /// @notice Persists only dirty HP/MP values produced by their recognized live BattleProxy.
+    /// @dev A zero-HP unit remains in battle custody during pulses; graveyard handling is final-settlement only.
+    function checkpointBattleVitals(
+        uint256[] calldata tokenIds,
+        uint16[] calldata hpValues,
+        uint16[] calldata mpValues,
+        uint32 checkpointNonce
+    ) external {
+        _validateBattleVitalsInput(tokenIds, hpValues, mpValues);
+        for (uint256 index; index < tokenIds.length; ++index) {
+            _validateBattleCheckpoint(tokenIds[index], msg.sender, checkpointNonce, hpValues[index], mpValues[index]);
+        }
+        for (uint256 index; index < tokenIds.length; ++index) {
+            uint256 tokenId = tokenIds[index];
+            _writeBattleVitals(tokenId, hpValues[index], mpValues[index], checkpointNonce);
+            emit BattleVitalsCheckpointed(tokenId, msg.sender, hpValues[index], mpValues[index], checkpointNonce);
+            if (battleCheckpointMetadataEnabled) _emitMetadataUpdate(tokenId);
+        }
+    }
+
+    /// @notice Commits final local vitals; zero-HP units move to the graveyard here, never at ordinary pulse time.
+    function settleBattleVitals(
+        uint256[] calldata tokenIds,
+        uint16[] calldata hpValues,
+        uint16[] calldata mpValues,
+        uint32 checkpointNonce
+    ) external {
+        _validateBattleVitalsInput(tokenIds, hpValues, mpValues);
+        for (uint256 index; index < tokenIds.length; ++index) {
+            _validateBattleCheckpoint(tokenIds[index], msg.sender, checkpointNonce, hpValues[index], mpValues[index]);
+        }
+        for (uint256 index; index < tokenIds.length; ++index) {
+            uint256 tokenId = tokenIds[index];
+            _writeBattleVitals(tokenId, hpValues[index], mpValues[index], checkpointNonce);
+            emit BattleVitalsSettled(tokenId, msg.sender, hpValues[index], mpValues[index], checkpointNonce);
+            if (hpValues[index] == 0) {
+                address factory = battleProxyFactory[msg.sender];
+                _clearBattleBinding(tokenId, msg.sender, factory);
+                _moveToGraveyard(tokenId);
+            } else if (battleCheckpointMetadataEnabled) {
+                _emitMetadataUpdate(tokenId);
+            }
+        }
+    }
+
     // === Graveyard ===
 
     function _autoTransferToGraveyard(uint256 tokenId) internal {
@@ -250,8 +362,8 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
 
     function tokenURI(uint256 tokenId) public view override returns (string memory) {
         _requireToken(tokenId);
-        if (binderUriBldrAddress == address(0)) revert UriBuilderNotSet();
-        return IBinderUriBldr(binderUriBldrAddress).tokenURI(tokenId);
+        if (binderMetadataAddress == address(0)) revert BinderMetadataNotSet();
+        return IBinderMetadata(binderMetadataAddress).tokenURI(tokenId);
     }
 
     // === Consolidated views ===
@@ -292,9 +404,9 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
 
     // === Administration ===
 
-    function setBinderUriBldr(address builderAddress) external onlyOwner {
-        if (builderAddress == address(0)) revert UriBuilderNotSet();
-        binderUriBldrAddress = builderAddress;
+    function setBinderMetadata(address metadataAddress) external onlyOwner {
+        if (metadataAddress == address(0) || metadataAddress.code.length == 0) revert BinderMetadataNotSet();
+        binderMetadataAddress = metadataAddress;
         _emitAllMetadataUpdate();
     }
 
@@ -322,6 +434,20 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         _emitAllMetadataUpdate();
     }
 
+    /// @notice Enables ERC-4906 events for coarse official battle checkpoints.
+    /// @dev Ordinary `updateCurrentStats` remains silent to avoid high-frequency metadata spam.
+    function setBattleCheckpointMetadataEnabled(bool enabled) external onlyRole(CONFIG_ROLE) {
+        battleCheckpointMetadataEnabled = enabled;
+    }
+
+    /// @notice Emits a narrowly authorized ERC-4906 refresh for a dependent module update.
+    /// @dev BinderSkills receives this role after canonical pairing so learned-skill changes
+    /// can refresh one NFT without receiving CONFIG_ROLE or gameplay write authority.
+    function refreshMetadata(uint256 tokenId) external onlyRole(METADATA_REFRESH_ROLE) {
+        _requireToken(tokenId);
+        _emitMetadataUpdate(tokenId);
+    }
+
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
     }
@@ -337,6 +463,72 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         if (!_isIdle(tokenId)) revert TokenBusy(tokenId, _activityState[tokenId].activityId);
         if (!_isReadyToArm(tokenId)) revert UnitNotReadyToArm(tokenId);
         if (binderGraveyard != address(0) && ownerOf(tokenId) == binderGraveyard) revert TokenInGraveyard(tokenId);
+    }
+
+    function _requireAuthorizedBattleFactory(address factory) internal view {
+        if (!authorizedBattleFactory[factory]) revert UnauthorizedBattleFactory(factory);
+    }
+
+    function _requireBattleBinding(uint256 tokenId, address battleProxy, address factory) internal view {
+        address expectedProxy = activeBattleProxy[tokenId];
+        if (expectedProxy != battleProxy) revert BattleProxyMismatch(tokenId, expectedProxy, battleProxy);
+        address expectedFactory = battleProxyFactory[battleProxy];
+        if (expectedFactory != factory) revert UnauthorizedBattleFactory(factory);
+    }
+
+    function _clearBattleBinding(uint256 tokenId, address battleProxy, address factory) internal {
+        delete activeBattleProxy[tokenId];
+        if (activeBattleCountByFactory[factory] == 0) revert UnauthorizedBattleFactory(factory);
+        activeBattleCountByFactory[factory] -= 1;
+        emit BattleProxyCleared(tokenId, battleProxy, factory);
+    }
+
+    function _validateBattleVitalsInput(
+        uint256[] calldata tokenIds,
+        uint16[] calldata hpValues,
+        uint16[] calldata mpValues
+    ) internal pure {
+        if (
+            tokenIds.length == 0 || tokenIds.length > BinderIds.MAX_BATTLE_PARTICIPANTS
+                || tokenIds.length != hpValues.length || tokenIds.length != mpValues.length
+        ) {
+            revert InvalidBattleVitalsInput();
+        }
+        for (uint256 index; index < tokenIds.length; ++index) {
+            for (uint256 comparison = index + 1; comparison < tokenIds.length; ++comparison) {
+                if (tokenIds[index] == tokenIds[comparison]) revert InvalidBattleVitalsInput();
+            }
+        }
+    }
+
+    function _validateBattleCheckpoint(
+        uint256 tokenId,
+        address battleProxy,
+        uint32 checkpointNonce,
+        uint16 currentHP,
+        uint16 currentMP
+    ) internal view {
+        _requireToken(tokenId);
+        address factory = battleProxyFactory[battleProxy];
+        _requireAuthorizedBattleFactory(factory);
+        _requireBattleBinding(tokenId, battleProxy, factory);
+        address owner = ownerOf(tokenId);
+        if (owner != battleProxy) revert BattleTokenNotEscrowed(tokenId, battleProxy, owner);
+        uint8 activityId = _activityState[tokenId].activityId;
+        if (activityId != BinderIds.ACTIVITY_BATTLE) revert BattleActivityRequired(tokenId, activityId);
+        uint32 previousNonce = battleCheckpointNonce[tokenId];
+        if (checkpointNonce <= previousNonce) revert StaleBattleCheckpoint(tokenId, previousNonce, checkpointNonce);
+        binderStructs.DynamicStats storage dynamicStats = _tokenMetadata[tokenId].dynamicStats;
+        if (currentHP > dynamicStats.maxHP || currentMP > dynamicStats.maxMP) {
+            revert BattleVitalsExceedMaximum(tokenId, currentHP, currentMP, dynamicStats.maxHP, dynamicStats.maxMP);
+        }
+    }
+
+    function _writeBattleVitals(uint256 tokenId, uint16 currentHP, uint16 currentMP, uint32 checkpointNonce) internal {
+        binderStructs.DynamicStats storage dynamicStats = _tokenMetadata[tokenId].dynamicStats;
+        dynamicStats.currentHP = currentHP;
+        dynamicStats.currentMP = currentMP;
+        battleCheckpointNonce[tokenId] = checkpointNonce;
     }
 
     function _requireActivityController(uint8 activityId, address caller) internal view {
