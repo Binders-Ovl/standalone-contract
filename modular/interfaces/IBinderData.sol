@@ -7,6 +7,7 @@ import "../supportContract/binderStructs.sol";
 /// @notice Cross-module API for canonical BinderData state and authorized mutations.
 /// @dev Deliberately excludes administrative role management and renderer configuration.
 interface IBinderData is IERC721 {
+    function binderMetadataAddress() external view returns (address);
     function _mintRandomNFT(
         address recipient,
         uint256 classId,
@@ -28,6 +29,7 @@ interface IBinderData is IERC721 {
     ) external returns (uint256);
 
     function tfToGraveyard(uint256 tokenId) external;
+    function resurrectFromGraveyard(uint256 tokenId, address recipient, uint16 currentHP, uint16 currentMP) external;
     function startActivity(uint256 tokenId, uint8 activityId, uint48 lockedUntil) external;
     function endActivity(uint256 tokenId) external;
     function updateNFTStats(
@@ -35,7 +37,7 @@ interface IBinderData is IERC721 {
         binderStructs.StaticStats calldata stats,
         binderStructs.DynamicStats calldata dynamicStats
     ) external;
-    function updateCurrentStats(uint256 tokenId, uint16 currentHP, uint16 currentMP) external;
+    function adminUpdatePersistentVitals(uint256 tokenId, uint16 currentHP, uint16 currentMP) external;
     function registerBattleProxy(uint256 tokenId, address battleProxy) external;
     function clearBattleProxy(uint256 tokenId, address battleProxy) external;
     function checkpointBattleVitals(
@@ -53,6 +55,7 @@ interface IBinderData is IERC721 {
     function setClassVersion(uint256 classId, uint16 version) external;
     function refreshAllMetadata() external;
     function refreshMetadata(uint256 tokenId) external;
+    function setBinderMetadata(address metadataAddress) external;
 
     function getUnitState(uint256 tokenId) external view returns (binderStructs.UnitStateView memory);
     function getNFTClass(uint256 tokenId) external view returns (uint256);

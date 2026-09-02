@@ -50,6 +50,7 @@ library BinderIds {
 
     uint8 internal constant ACTIVITY_IDLE = 0;
     uint8 internal constant ACTIVITY_BATTLE = 1;
+    uint8 internal constant ACTIVITY_FUSION = 2;
     uint8 internal constant INVALID_AILMENT_ID = 0;
     uint8 internal constant MIN_AILMENT_ID = 1;
     uint8 internal constant MAX_AILMENT_ID = type(uint8).max;

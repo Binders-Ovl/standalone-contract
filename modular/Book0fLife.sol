@@ -450,6 +450,11 @@ contract Book0fLife is AccessControl {
 
     // === Views ===
 
+    /// @notice Non-reverting existence query for administrative flows and UIs.
+    function classExists(uint256 classId) external view returns (bool) {
+        return _classExists[classId];
+    }
+
     function getClassName(uint256 classId) external view returns (string memory) {
         _requireClass(classId);
         return _classNames[classId];

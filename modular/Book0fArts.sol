@@ -105,6 +105,11 @@ contract Book0fArts is AccessControl, IBook0fArts {
         return page;
     }
 
+    /// @notice Non-reverting existence query for repertoire validation and UIs.
+    function artExists(uint32 artId) external view override returns (bool) {
+        return _artExists[artId];
+    }
+
     function getArtDefinition(uint32 artId) external view override returns (binderStructs.ArtDefinition memory) {
         _requireArt(artId);
         return _definitions[artId][_currentVersion[artId]];

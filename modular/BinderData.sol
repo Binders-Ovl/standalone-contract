@@ -29,6 +29,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     error InvalidClassId();
     error InvalidNewVersionTooHigh();
     error GraveyardNotSet();
+    error GraveyardAlreadyConfigured(address configuredGraveyard);
     error TokenBusy(uint256 tokenId, uint8 activityId);
     error UnitNotReadyToArm(uint256 tokenId);
     error UnitAlreadyIdle(uint256 tokenId);
@@ -37,6 +38,10 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     error UnauthorizedActivityController(uint8 activityId, address caller);
     error TokenInGraveyard(uint256 tokenId);
     error UnauthorizedGraveyardTransfer(uint256 tokenId);
+    error UnauthorizedResurrection(address caller);
+    error TokenNotInGraveyard(uint256 tokenId, address actualOwner);
+    error InvalidResurrectionRecipient(address recipient);
+    error InvalidResurrectionVitals(uint256 tokenId, uint16 currentHP, uint16 currentMP, uint16 maxHP, uint16 maxMP);
     error InvalidBattleFactory(address factory);
     error BattleFactoryHasActiveEscrows(address factory, uint256 activeCount);
     error UnauthorizedBattleFactory(address caller);
@@ -47,6 +52,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     error InvalidBattleVitalsInput();
     error StaleBattleCheckpoint(uint256 tokenId, uint32 currentNonce, uint32 providedNonce);
     error BattleVitalsExceedMaximum(uint256 tokenId, uint16 currentHP, uint16 currentMP, uint16 maxHP, uint16 maxMP);
+    error ActiveBattleBinding(uint256 tokenId, address battleProxy);
 
     uint256 public maxSupply = 1_000_000;
     uint128 internal supplyBuffer = 125;
@@ -71,6 +77,8 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     mapping(uint256 => binderStructs.ActivityState) private _activityState;
     mapping(uint8 => address) private _activityController;
     bool private _graveyardTransferInProgress;
+    bool private _resurrectionTransferInProgress;
+    bool private _permanentBurnInProgress;
 
     event NFTMinted(address indexed owner, uint256 tokenId, uint8 rarityId, string rarity, string className);
     event NFTFusionMinted(address indexed owner, uint256 tokenId, uint8 rarityId, string rarity, string className);
@@ -83,6 +91,10 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     event ActivityEnded(uint256 indexed tokenId, uint8 indexed activityId);
     event ActivityForceCleared(uint256 indexed tokenId, uint8 indexed activityId, address indexed admin);
     event ActivityClearedForGraveyard(uint256 indexed tokenId, uint8 indexed activityId);
+    event GraveyardConfigured(address indexed graveyard);
+    event BinderSentToGraveyard(uint256 indexed tokenId, address indexed previousOwner, address indexed graveyard);
+    event BinderResurrected(uint256 indexed tokenId, address indexed recipient, uint16 currentHP, uint16 currentMP);
+    event BinderPermanentlyBurned(uint256 indexed tokenId, address indexed graveyard, address indexed admin);
     event MetadataUpdate(uint256 tokenId);
     event BatchMetadataUpdate(uint256 fromTokenId, uint256 toTokenId);
     event BattleFactoryAuthorizationUpdated(address indexed factory, bool authorized);
@@ -90,6 +102,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     event BattleProxyCleared(uint256 indexed tokenId, address indexed battleProxy, address indexed factory);
     event BattleVitalsCheckpointed(uint256 indexed tokenId, address indexed battleProxy, uint16 currentHP, uint16 currentMP, uint32 nonce);
     event BattleVitalsSettled(uint256 indexed tokenId, address indexed battleProxy, uint16 currentHP, uint16 currentMP, uint32 nonce);
+    event AdminPersistentVitalsUpdated(uint256 indexed tokenId, uint16 currentHP, uint16 currentMP, address indexed admin);
 
     constructor(address initialOwner, string memory newBaseImageURI) ERC721("Binders", "UBIND") {
         if (bytes(newBaseImageURI).length > 0 && bytes(newBaseImageURI)[bytes(newBaseImageURI).length - 1] != "/") {
@@ -199,6 +212,8 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         _requireToken(tokenId);
         uint8 activityId = _activityState[tokenId].activityId;
         if (activityId == 0) revert UnitAlreadyIdle(tokenId);
+        address battleProxy = activeBattleProxy[tokenId];
+        if (battleProxy != address(0)) revert ActiveBattleBinding(tokenId, battleProxy);
         delete _activityState[tokenId];
         emit ActivityForceCleared(tokenId, activityId, msg.sender);
         _emitMetadataUpdate(tokenId);
@@ -234,13 +249,23 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         _emitMetadataUpdate(tokenId);
     }
 
-    /// @notice Battle-state update. Frequent HP/MP changes deliberately do not emit ERC-4906 events.
-    function updateCurrentStats(uint256 tokenId, uint16 currentHP, uint16 currentMP) external onlyRole(BATTLE_ROLE) {
+    /// @notice Explicit development/emergency update for a persistent, non-Battle Binder.
+    /// @dev Official BattleProxy vitals use provenance-checked checkpoint paths;
+    /// this function must never mutate an active match behind its proxy's back.
+    function adminUpdatePersistentVitals(uint256 tokenId, uint16 currentHP, uint16 currentMP) external onlyRole(BATTLE_ROLE) {
         _requireToken(tokenId);
+        address battleProxy = activeBattleProxy[tokenId];
+        if (battleProxy != address(0)) revert ActiveBattleBinding(tokenId, battleProxy);
+        if (binderGraveyard != address(0) && ownerOf(tokenId) == binderGraveyard) revert TokenInGraveyard(tokenId);
         binderStructs.NFTMetadata storage meta = _tokenMetadata[tokenId];
         meta.dynamicStats.currentHP = currentHP > meta.dynamicStats.maxHP ? meta.dynamicStats.maxHP : currentHP;
         meta.dynamicStats.currentMP = currentMP > meta.dynamicStats.maxMP ? meta.dynamicStats.maxMP : currentMP;
-        if (meta.dynamicStats.currentHP == 0) _autoTransferToGraveyard(tokenId);
+        emit AdminPersistentVitalsUpdated(tokenId, meta.dynamicStats.currentHP, meta.dynamicStats.currentMP, msg.sender);
+        if (meta.dynamicStats.currentHP == 0) {
+            _autoTransferToGraveyard(tokenId);
+        } else {
+            _emitMetadataUpdate(tokenId);
+        }
     }
 
     // === Narrow official BattleProxy lifecycle / persistence ===
@@ -270,6 +295,9 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         if (activityId != BinderIds.ACTIVITY_BATTLE) revert BattleActivityRequired(tokenId, activityId);
 
         activeBattleProxy[tokenId] = battleProxy;
+        // A checkpoint sequence belongs to one official proxy binding, not to
+        // the token's lifetime. Every fresh battle starts from its own nonce 0.
+        battleCheckpointNonce[tokenId] = 0;
         battleProxyFactory[battleProxy] = msg.sender;
         activeBattleCountByFactory[msg.sender] += 1;
         emit BattleProxyRegistered(tokenId, battleProxy, msg.sender);
@@ -341,11 +369,15 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     /// @notice Explicit fusion retirement path.
     function tfToGraveyard(uint256 tokenId) external onlyRole(FUSION_ROLE) {
         _requireToken(tokenId);
+        address battleProxy = activeBattleProxy[tokenId];
+        if (battleProxy != address(0)) revert ActiveBattleBinding(tokenId, battleProxy);
         _moveToGraveyard(tokenId);
     }
 
     function _moveToGraveyard(uint256 tokenId) internal {
         if (binderGraveyard == address(0)) revert GraveyardNotSet();
+        address battleProxy = activeBattleProxy[tokenId];
+        if (battleProxy != address(0)) revert ActiveBattleBinding(tokenId, battleProxy);
         uint8 activityId = _activityState[tokenId].activityId;
         if (activityId != 0) {
             delete _activityState[tokenId];
@@ -354,8 +386,48 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         }
 
         _graveyardTransferInProgress = true;
-        _transfer(ownerOf(tokenId), binderGraveyard, tokenId);
+        address previousOwner = ownerOf(tokenId);
+        _transfer(previousOwner, binderGraveyard, tokenId);
         _graveyardTransferInProgress = false;
+        emit BinderSentToGraveyard(tokenId, previousOwner, binderGraveyard);
+    }
+
+    /// @notice Releases one dead Binder only through the configured Graveyard's
+    /// validated game-rule flow, atomically restoring nonzero bounded vitals.
+    function resurrectFromGraveyard(uint256 tokenId, address recipient, uint16 currentHP, uint16 currentMP) external {
+        if (binderGraveyard == address(0)) revert GraveyardNotSet();
+        if (msg.sender != binderGraveyard) revert UnauthorizedResurrection(msg.sender);
+        if (recipient == address(0) || recipient == binderGraveyard) revert InvalidResurrectionRecipient(recipient);
+        _requireToken(tokenId);
+        address owner = ownerOf(tokenId);
+        if (owner != binderGraveyard) revert TokenNotInGraveyard(tokenId, owner);
+
+        binderStructs.DynamicStats storage dynamicStats = _tokenMetadata[tokenId].dynamicStats;
+        if (
+            currentHP == 0 || currentHP > dynamicStats.maxHP || currentMP > dynamicStats.maxMP
+        ) {
+            revert InvalidResurrectionVitals(tokenId, currentHP, currentMP, dynamicStats.maxHP, dynamicStats.maxMP);
+        }
+        dynamicStats.currentHP = currentHP;
+        dynamicStats.currentMP = currentMP;
+        _resurrectionTransferInProgress = true;
+        _transfer(binderGraveyard, recipient, tokenId);
+        _resurrectionTransferInProgress = false;
+        emit BinderResurrected(tokenId, recipient, currentHP, currentMP);
+        _emitMetadataUpdate(tokenId);
+    }
+
+    /// @notice Irreversibly removes a Binder already held in Graveyard custody.
+    /// @dev This is deliberately distinct from the reversible resurrection flow.
+    function burnGraveyardedBinder(uint256 tokenId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (binderGraveyard == address(0)) revert GraveyardNotSet();
+        _requireToken(tokenId);
+        address owner = ownerOf(tokenId);
+        if (owner != binderGraveyard) revert TokenNotInGraveyard(tokenId, owner);
+        _permanentBurnInProgress = true;
+        _burn(tokenId);
+        _permanentBurnInProgress = false;
+        emit BinderPermanentlyBurned(tokenId, binderGraveyard, msg.sender);
     }
 
     // === ERC-721 metadata entrypoint ===
@@ -404,7 +476,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
 
     // === Administration ===
 
-    function setBinderMetadata(address metadataAddress) external onlyOwner {
+    function setBinderMetadata(address metadataAddress) external onlyRole(CONFIG_ROLE) {
         if (metadataAddress == address(0) || metadataAddress.code.length == 0) revert BinderMetadataNotSet();
         binderMetadataAddress = metadataAddress;
         _emitAllMetadataUpdate();
@@ -418,7 +490,9 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
 
     function setGraveyard(address graveyard) external onlyOwner {
         if (graveyard == address(0)) revert GraveyardNotSet();
+        if (binderGraveyard != address(0)) revert GraveyardAlreadyConfigured(binderGraveyard);
         binderGraveyard = graveyard;
+        emit GraveyardConfigured(graveyard);
         _emitAllMetadataUpdate();
     }
 
@@ -435,7 +509,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     }
 
     /// @notice Enables ERC-4906 events for coarse official battle checkpoints.
-    /// @dev Ordinary `updateCurrentStats` remains silent to avoid high-frequency metadata spam.
+    /// @dev The official proxy pulse path remains opt-in to avoid high-frequency metadata spam.
     function setBattleCheckpointMetadataEnabled(bool enabled) external onlyRole(CONFIG_ROLE) {
         battleCheckpointMetadataEnabled = enabled;
     }
@@ -566,7 +640,9 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         override(ERC721, ERC721Pausable)
     {
         if (from != address(0)) {
-            if (from == binderGraveyard) revert TokenInGraveyard(tokenId);
+            if (from == binderGraveyard && !_resurrectionTransferInProgress && !_permanentBurnInProgress) {
+                revert TokenInGraveyard(tokenId);
+            }
             uint8 activityId = _activityState[tokenId].activityId;
             if (activityId != 0) revert TokenBusy(tokenId, activityId);
         }

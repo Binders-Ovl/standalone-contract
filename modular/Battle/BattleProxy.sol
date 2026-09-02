@@ -228,6 +228,10 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
 
         actor.currentHP -= art.hpCost;
         actor.currentMP -= art.mpCost;
+        // A declared Art completes even when its own HP cost defeats the caster.
+        // Mark the defeat before effects so the unit cannot take a second action,
+        // but deliberately do not settle until this complete declaration resolves.
+        if (actor.currentHP == 0) actor.alive = false;
         int256 formulaResult = ArtFormulaLib.evaluate(art.primaryFormula, _asEffectiveStats(actor), _asEffectiveStats(target));
         uint16 actorHPAfterCost = actor.currentHP;
         uint16 actorMPAfterCost = actor.currentMP;
@@ -288,22 +292,35 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         emit BattleVitalsPulsed(nextNonce, bitmap, dirtyCount);
     }
 
-    /// @notice Permissionlessly settles a match after combat has reduced it to at most one living unit.
+    /// @notice Permissionlessly settles a match after combat has reduced it to at most one living player.
     /// @dev Survivors are returned via the stable factory gateway; zero-HP units
     /// are moved to BinderData's configured graveyard by final settlement.
     function settleDefeatedBattle() external {
         if (!isActive) revert BattleInactive();
-        uint256 survivors;
+        uint256 livingControllers;
+        address survivingController;
         for (uint256 index; index < _participantIds.length; ++index) {
-            if (_units[_participantIds[index]].alive) ++survivors;
+            BattleUnit storage unit = _units[_participantIds[index]];
+            if (!unit.alive) continue;
+            if (survivingController == address(0)) {
+                survivingController = unit.controller;
+                livingControllers = 1;
+            } else if (unit.controller != survivingController) {
+                livingControllers = 2;
+                break;
+            }
         }
-        if (survivors > 1) revert BattleNotReadyForSettlement(survivors);
+        if (livingControllers > 1) revert BattleNotReadyForSettlement(livingControllers);
 
         uint256 count = _participantIds.length;
         uint256[] memory tokenIds = new uint256[](count);
         uint16[] memory hpValues = new uint16[](count);
         uint16[] memory mpValues = new uint16[](count);
-        uint256[] memory survivorIds = new uint256[](survivors);
+        uint256 survivorCount;
+        for (uint256 index; index < count; ++index) {
+            if (_units[_participantIds[index]].alive) ++survivorCount;
+        }
+        uint256[] memory survivorIds = new uint256[](survivorCount);
         uint256 survivorIndex;
         for (uint256 index; index < count; ++index) {
             uint256 tokenId = _participantIds[index];
@@ -325,7 +342,7 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         }
         checkpointNonce = nextNonce;
         dirtyUnitBitmap = 0;
-        emit BattleSettled(nextNonce, survivors);
+        emit BattleSettled(nextNonce, survivorCount);
     }
 
     /// @notice Returns all escrowed NFTs before any referee action has occurred.

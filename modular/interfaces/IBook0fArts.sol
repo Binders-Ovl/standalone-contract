@@ -8,6 +8,7 @@ interface IBook0fArts {
     function getArtCount() external view returns (uint256);
     function getArtIdAt(uint256 index) external view returns (uint32);
     function getArtIds(uint256 offset, uint256 limit) external view returns (uint32[] memory);
+    function artExists(uint32 artId) external view returns (bool);
     function getArtDefinition(uint32 artId) external view returns (binderStructs.ArtDefinition memory);
     function getArtDefinitionAtVersion(uint32 artId, uint16 version)
         external

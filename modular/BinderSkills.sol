@@ -21,7 +21,7 @@ contract BinderSkills is Initializable, AccessControl, UUPSUpgradeable, IBinderS
     /// @notice Canonically paired, permanent BinderData collection address.
     address public override binderData;
     /// @notice Canonical registry used to reject skill writes through an unregistered proxy.
-    address public centralConsole;
+    address public override centralConsole;
 
     mapping(uint256 => uint32[3]) private _moveSets;
     mapping(uint256 => uint32[]) private _activeSkills;
@@ -35,6 +35,7 @@ contract BinderSkills is Initializable, AccessControl, UUPSUpgradeable, IBinderS
     event MoveSetLearned(uint256 indexed tokenId, uint8 indexed slot, uint32 indexed artId);
     event ActiveSkillLearned(uint256 indexed tokenId, uint32 indexed artId);
     event PassiveSkillLearned(uint256 indexed tokenId, uint32 indexed artId);
+    event CentralConsoleUpdated(address indexed previousConsole, address indexed newConsole);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -161,6 +162,33 @@ contract BinderSkills is Initializable, AccessControl, UUPSUpgradeable, IBinderS
     function isCanonicalPair() external view returns (bool) {
         return ICentralConsole(centralConsole).binderData() == binderData
             && ICentralConsole(centralConsole).binderSkills() == address(this);
+    }
+
+    /// @notice Moves this persistent Skills proxy to a staged replacement
+    /// console only after that console proves the same immutable collection and
+    /// canonical Skills pairing. Learned storage remains in this proxy.
+    function setCentralConsole(address newCentralConsole) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newCentralConsole == centralConsole || newCentralConsole.code.length == 0) {
+            revert CanonicalPairMismatch(centralConsole, newCentralConsole);
+        }
+        address candidateBinderData;
+        address candidateSkills;
+        try ICentralConsole(newCentralConsole).binderData() returns (address resolvedBinderData) {
+            candidateBinderData = resolvedBinderData;
+        } catch {
+            revert CanonicalPairMismatch(binderData, address(0));
+        }
+        try ICentralConsole(newCentralConsole).binderSkills() returns (address resolvedSkills) {
+            candidateSkills = resolvedSkills;
+        } catch {
+            revert CanonicalSkillsMismatch(address(this), address(0));
+        }
+        if (candidateBinderData != binderData) revert CanonicalPairMismatch(binderData, candidateBinderData);
+        if (candidateSkills != address(this)) revert CanonicalSkillsMismatch(address(this), candidateSkills);
+
+        address previousConsole = centralConsole;
+        centralConsole = newCentralConsole;
+        emit CentralConsoleUpdated(previousConsole, newCentralConsole);
     }
 
     function _authorizeUpgrade(address) internal override onlyRole(UPGRADER_ROLE) {}

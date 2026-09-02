@@ -122,7 +122,7 @@ contract ScaleOfBalance is AccessControl {
     {
         // Rules and requirements
         require(classId != 0, "Invalid classId");
-        require(bytes(book0fLife.getClassName(classId)).length > 0, "Class does not exist");
+        require(book0fLife.classExists(classId), "Class does not exist");
 
         for (uint8 s = 0; s < 8; s++) {
             require(newConfig.minStats[s] <= newConfig.maxStats[s], "Invalid stat range");
@@ -166,7 +166,7 @@ contract ScaleOfBalance is AccessControl {
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         // Requirement and Rules
         require(classId != 0, "Invalid classId");
-        require(bytes(book0fLife.getClassName(classId)).length == 0, "Class already exists");
+        require(!book0fLife.classExists(classId), "Class already exists");
 
         for (uint8 s = 0; s < 8; s++) {
             require(config.maxStats[s] >= config.minStats[s], "maxStat must be >= minStat");

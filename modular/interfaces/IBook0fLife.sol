@@ -41,6 +41,7 @@ interface IBook0fLife {
     ) external;
 
     function isRarityRegistered(uint8 rarityId) external view returns (bool);
+    function classExists(uint256 classId) external view returns (bool);
     function isClassMintEligible(uint256 classId, uint8 playerNationId) external view returns (bool);
     function getClassName(uint256 classId) external view returns (string memory);
     function getClassRarityId(uint256 classId) external view returns (uint8);

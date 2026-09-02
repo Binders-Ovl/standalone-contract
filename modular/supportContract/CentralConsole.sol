@@ -7,6 +7,7 @@ import "./Errors.sol";
 import "../interfaces/ICentralConsole.sol";
 import "../interfaces/IBinderMetadata.sol";
 import "../interfaces/IBinderSkills.sol";
+import "../interfaces/IBinderData.sol";
 
 /// @notice Canonical Binders module registry and configuration control plane.
 /// @dev It deliberately has no arbitrary call primitive and owns no NFT, Book,
@@ -60,6 +61,30 @@ contract CentralConsole is AccessControl, ICentralConsole {
             revert CanonicalPairMismatch(binderData, address(0));
         }
         if (metadataBinderData != binderData) revert CanonicalPairMismatch(binderData, metadataBinderData);
+        _setModule(BinderIds.MODULE_BINDER_METADATA, binderMetadata, moduleAddress);
+        binderMetadata = moduleAddress;
+    }
+
+    /// @notice Atomically validates the renderer, updates BinderData's tokenURI
+    /// target, records the canonical module, and verifies the final pointer.
+    function configureBinderMetadata(address moduleAddress) public onlyRole(CONFIG_ROLE) {
+        address metadataBinderData;
+        try IBinderMetadata(moduleAddress).binderData() returns (address resolvedBinderData) {
+            metadataBinderData = resolvedBinderData;
+        } catch {
+            revert CanonicalPairMismatch(binderData, address(0));
+        }
+        if (metadataBinderData != binderData) revert CanonicalPairMismatch(binderData, metadataBinderData);
+        if (
+            IBinderMetadata(moduleAddress).binderSkills() != binderSkills
+                || IBinderMetadata(moduleAddress).book0fLife() != book0fLife
+                || IBinderMetadata(moduleAddress).book0fArts() != book0fArts
+        ) revert CanonicalPairMismatch(binderData, metadataBinderData);
+
+        IBinderData(binderData).setBinderMetadata(moduleAddress);
+        if (IBinderData(binderData).binderMetadataAddress() != moduleAddress) {
+            revert CanonicalPairMismatch(moduleAddress, IBinderData(binderData).binderMetadataAddress());
+        }
         _setModule(BinderIds.MODULE_BINDER_METADATA, binderMetadata, moduleAddress);
         binderMetadata = moduleAddress;
     }

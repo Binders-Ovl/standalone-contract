@@ -9,6 +9,7 @@ import "@openzeppelin/contracts-4.8/security/ReentrancyGuard.sol";
 import "@pythnetwork/entropy-sdk-solidity/IEntropyV2.sol";
 import "@pythnetwork/entropy-sdk-solidity/IEntropyConsumer.sol";
 import "./supportContract/binderStructs.sol";
+import "./supportContract/binderIds.sol";
 import "./interfaces/IBinderData.sol";
 import "./interfaces/IBook0fLife.sol";
 
@@ -36,17 +37,37 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
 
     uint256 public nextFusionId;
     uint256 public fusionCost = 0.01 ether;
+    uint48 public constant FUSION_RESCUE_DELAY = 10 minutes;
+
+    enum FusionStatus {
+        NONE,
+        PENDING,
+        RESOLVED,
+        RESCUED
+    }
 
     mapping(uint256 => binderStructs.FusionRequest) private _fusionRequest;
     mapping(uint256 => binderStructs.AdvancedFusionRequest) private _fusionRequestAdvanced;   // PlaceHolder not Gonna be used anytime soon
     mapping(uint64 => uint256) private _entropyToFusionId;
+    mapping(uint256 => FusionStatus) public fusionStatus;
+    mapping(uint256 => uint48) public fusionRequestedAt;
+    mapping(uint256 => uint64) public fusionSequence;
 
     event FusionRequested(uint256 indexed fusionId, address user, uint256 nftId1, uint256 nftId2);
+    event FusionRescued(uint256 indexed fusionId, address indexed user, uint256 nftId1, uint256 nftId2);
     event FusionResult(uint256 indexed fusionId, address indexed user, bool success, uint256 newTokenId, uint256 class1, uint256 class2, uint256 targetClass);
     event BaseBinderUpdated(address newBinder);
     event Book0fLifeUpdated(address newFusionLibrary);
     event AdvancedFusionRequested(uint256 fusionId, address user, uint256[] nftIds, address[] catalysts); // Placeholder for Advanced fusion emission
     event NativeFundsWithdrawn(address indexed recipient, uint256 amount);
+
+    error IdenticalFusionTokens(uint256 tokenId);
+    error FusionTokenNotReady(uint256 tokenId);
+    error FusionRecipeUnavailable(uint256 class1, uint256 class2);
+    error UnknownEntropySequence(uint64 sequenceNumber);
+    error FusionNotPending(uint256 fusionId, FusionStatus status);
+    error FusionRescueNotReady(uint256 fusionId, uint48 availableAt);
+    error UnauthorizedFusionRescue(uint256 fusionId, address caller);
 
 
     constructor(address binderData_, address book0fLife_, address entropyAddress, address providerAddress, address initialOwner) {
@@ -70,6 +91,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     function riteFusion(uint256 nftId1, uint256 nftId2) external payable nonReentrant whenNotPaused {
         uint256 totalCost = entropy.getFeeV2(entropyProvider, 0) + fusionCost;
         require(msg.value >= totalCost, "Not enough gold my lord");
+        if (nftId1 == nftId2) revert IdenticalFusionTokens(nftId1);
 
         require(
             binderData.ownerOf(nftId1) == msg.sender &&
@@ -77,13 +99,23 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
             "Cannot sacrifice what u dont own"
         );
 
-        binderData.safeTransferFrom(msg.sender, address(this), nftId1);
-        binderData.safeTransferFrom(msg.sender, address(this), nftId2);
+        _requireFusionReady(nftId1);
+        _requireFusionReady(nftId2);
+        (uint256 class1, uint256 class2) = _sortMi(binderData.getNFTClass(nftId1), binderData.getNFTClass(nftId2));
+        binderStructs.FusionRecipe memory recipe = book0fLife.getFusionRecipe(class1, class2);
+        if (recipe.outcomes.length == 0) revert FusionRecipeUnavailable(class1, class2);
 
         uint256 fusionId = ++nextFusionId;
-        _fusionRequest[fusionId] = binderStructs.FusionRequest({ user: msg.sender, nftId1: nftId1, nftId2: nftId2, resolved: false });
+        _fusionRequest[fusionId] = binderStructs.FusionRequest({user: msg.sender, nftId1: nftId1, nftId2: nftId2, resolved: false});
+        fusionStatus[fusionId] = FusionStatus.PENDING;
+        fusionRequestedAt[fusionId] = uint48(block.timestamp);
 
-        _processEntropyRequest(fusionId);
+        binderData.safeTransferFrom(msg.sender, address(this), nftId1);
+        binderData.safeTransferFrom(msg.sender, address(this), nftId2);
+        binderData.startActivity(nftId1, BinderIds.ACTIVITY_FUSION, 0);
+        binderData.startActivity(nftId2, BinderIds.ACTIVITY_FUSION, 0);
+
+        fusionSequence[fusionId] = _processEntropyRequest(fusionId);
 
         emit FusionRequested(fusionId, msg.sender, nftId1, nftId2);
     }
@@ -94,8 +126,9 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         require(_providerAddress == entropyProvider, "Invalid provider");
 
         uint256 fusionId = _entropyToFusionId[sequenceNumber];
+        if (fusionId == 0) revert UnknownEntropySequence(sequenceNumber);
         binderStructs.FusionRequest storage request = _fusionRequest[fusionId];
-        require(!request.resolved, "Already processed");
+        if (fusionStatus[fusionId] != FusionStatus.PENDING) revert FusionNotPending(fusionId, fusionStatus[fusionId]);
 
         // Cache all necessary field early that will be used later
         address user = request.user;
@@ -103,6 +136,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         uint256 sId2 = request.nftId2;
 
         request.resolved = true;
+        fusionStatus[fusionId] = FusionStatus.RESOLVED;
         delete _entropyToFusionId[sequenceNumber];
 
         // Class Sorting
@@ -123,6 +157,43 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         binderData.tfToGraveyard(sId2);
 
         _emitFusionResult(fusionId, user, success, newTokenId, class1, class2, targetClass);
+    }
+
+    /// @notice Returns unfulfilled Fusion custody after the entropy timeout.
+    /// @dev The status is terminal before any external transfer, so a late
+    /// callback cannot mint or sacrifice the rescued NFTs.
+    function rescueFusion(uint256 fusionId) external nonReentrant {
+        binderStructs.FusionRequest storage request = _fusionRequest[fusionId];
+        if (fusionStatus[fusionId] != FusionStatus.PENDING) revert FusionNotPending(fusionId, fusionStatus[fusionId]);
+        uint48 availableAt = fusionRequestedAt[fusionId] + FUSION_RESCUE_DELAY;
+        if (block.timestamp < availableAt) revert FusionRescueNotReady(fusionId, availableAt);
+        if (msg.sender != request.user && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
+            revert UnauthorizedFusionRescue(fusionId, msg.sender);
+        }
+
+        fusionStatus[fusionId] = FusionStatus.RESCUED;
+        delete _entropyToFusionId[fusionSequence[fusionId]];
+        binderData.endActivity(request.nftId1);
+        binderData.endActivity(request.nftId2);
+        binderData.safeTransferFrom(address(this), request.user, request.nftId1);
+        binderData.safeTransferFrom(address(this), request.user, request.nftId2);
+        emit FusionRescued(fusionId, request.user, request.nftId1, request.nftId2);
+    }
+
+    function getFusionRequest(uint256 fusionId)
+        external
+        view
+        returns (address user, uint256 nftId1, uint256 nftId2, uint48 requestedAt, uint64 sequenceNumber, FusionStatus status)
+    {
+        binderStructs.FusionRequest storage request = _fusionRequest[fusionId];
+        return (
+            request.user,
+            request.nftId1,
+            request.nftId2,
+            fusionRequestedAt[fusionId],
+            fusionSequence[fusionId],
+            fusionStatus[fusionId]
+        );
     }
 
     // 3. Calculate Outcome of riteFusion Function
@@ -286,16 +357,21 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     }
 
     // Entropy Request Information - Requested by User thru riteFusion Function to be used in entropyCallback Function
-    function _processEntropyRequest(uint256 fusionId) internal {
+    function _processEntropyRequest(uint256 fusionId) internal returns (uint64 sequence) {
         uint256 fee = entropy.getFeeV2(entropyProvider, 0);
         bytes32 userSeed = keccak256(abi.encodePacked(block.timestamp, fusionId));
-        uint64 sequence = entropy.requestV2{value: fee}(
+        sequence = entropy.requestV2{value: fee}(
             entropyProvider,
             userSeed,
             0
         );
 
         _entropyToFusionId[sequence] = fusionId;
+    }
+
+    function _requireFusionReady(uint256 tokenId) internal view {
+        binderStructs.UnitStateView memory state = binderData.getUnitState(tokenId);
+        if (!state.idle || !state.readyToArm) revert FusionTokenNotReady(tokenId);
     }
 
     // Enforce class order to ensure recipe lookup is consistent with Book0fLife formart
