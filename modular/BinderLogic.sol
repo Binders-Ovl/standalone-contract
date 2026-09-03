@@ -15,6 +15,7 @@ import "./interfaces/IAllegianceRegistry.sol";
 /// @dev Nation state is only a per-request snapshot. AllegianceRegistry remains authoritative.
 contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsumer {
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    bytes32 public constant CONFIG_ROLE = keccak256("CONFIG_ROLE");
     uint16 public constant MAX_CHANCE_VALUE = 10_000;
 
     struct MintRequest {
@@ -39,6 +40,7 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
     event RandomMintCompleted(address indexed user, uint64 indexed sequenceNumber, uint8 rarityId, uint256 classId);
     event RarityDistributionChanged(uint8[] rarityIds, uint16[] chancesBps);
     event AllegianceRegistryUpdated(address indexed registry);
+    event Book0fLifeUpdated(address indexed book);
     event NativeFundsWithdrawn(address indexed recipient, uint256 amount);
 
     error InvalidMintRequest(uint64 sequenceNumber);
@@ -65,6 +67,7 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
         allegianceRegistry = IAllegianceRegistry(allegianceRegistryAddress);
         transferOwnership(initialOwner);
         _grantRole(DEFAULT_ADMIN_ROLE, initialOwner);
+        _grantRole(CONFIG_ROLE, initialOwner);
 
         // Default migration distribution: Common 75%, Uncommon 15%, Rare 10%.
         _activeRarityIds.push(1);
@@ -92,8 +95,12 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
         MintRequest memory request = _mintRequests[sequenceNumber];
         if (request.recipient == address(0)) revert InvalidMintRequest(sequenceNumber);
 
-        (uint8 rarityId, uint256 classId, binderStructs.StaticStats memory stats, binderStructs.DynamicStats memory dynamicStats) =
-            _generateProperties(randomNumber, request.nationId);
+        (
+            uint8 rarityId,
+            uint256 classId,
+            binderStructs.StaticStats memory stats,
+            binderStructs.DynamicStats memory dynamicStats
+        ) = _generateProperties(randomNumber, request.nationId);
 
         binderData._mintRandomNFT(
             request.recipient,
@@ -140,10 +147,16 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
         emit RarityDistributionChanged(rarityIds, chancesBps);
     }
 
-    function setAllegianceRegistry(address registry) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setAllegianceRegistry(address registry) external onlyRole(CONFIG_ROLE) {
         require(registry != address(0), "Invalid registry");
         allegianceRegistry = IAllegianceRegistry(registry);
         emit AllegianceRegistryUpdated(registry);
+    }
+
+    function setBook0fLife(address book) external onlyRole(CONFIG_ROLE) {
+        require(book != address(0) && book.code.length != 0, "Invalid book");
+        book0fLife = IBook0fLife(book);
+        emit Book0fLifeUpdated(book);
     }
 
     function setMintPrice(uint256 newMintPrice) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -155,7 +168,11 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
         return (request.recipient, request.nationId);
     }
 
-    function getActiveRarityDistribution() external view returns (uint8[] memory rarityIds, uint16[] memory chancesBps) {
+    function getActiveRarityDistribution()
+        external
+        view
+        returns (uint8[] memory rarityIds, uint16[] memory chancesBps)
+    {
         rarityIds = _activeRarityIds;
         chancesBps = new uint16[](rarityIds.length);
         for (uint256 i = 0; i < rarityIds.length; ++i) {
@@ -191,11 +208,8 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
         )
     {
         rarityId = _determineRarity(uint256(keccak256(abi.encodePacked("BINDERS_RARITY", entropySeed))));
-        classId = _selectEligibleClass(
-            rarityId,
-            nationId,
-            uint256(keccak256(abi.encodePacked("BINDERS_CLASS", entropySeed)))
-        );
+        classId =
+            _selectEligibleClass(rarityId, nationId, uint256(keccak256(abi.encodePacked("BINDERS_CLASS", entropySeed))));
 
         binderStructs.ClassConfig memory config = book0fLife.getClassConfig(classId);
         bytes32 statSeed = keccak256(abi.encodePacked("BINDERS_STATS", previousRandomNumber, entropySeed));
@@ -302,7 +316,9 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
     }
 
     function _generateBytesOrder(bytes32 seed) private pure returns (uint8[32] memory order) {
-        for (uint8 i = 0; i < 32; ++i) order[i] = i;
+        for (uint8 i = 0; i < 32; ++i) {
+            order[i] = i;
+        }
         for (uint8 i = 31; i > 0; --i) {
             uint8 j = uint8(seed[i]) % (i + 1);
             (order[i], order[j]) = (order[j], order[i]);

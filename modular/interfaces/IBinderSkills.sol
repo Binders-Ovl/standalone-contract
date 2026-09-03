@@ -5,6 +5,7 @@ pragma solidity ^0.8.24;
 interface IBinderSkills {
     function binderData() external view returns (address);
     function centralConsole() external view returns (address);
+    function setCentralConsole(address newCentralConsole) external;
     function getMoveSets(uint256 tokenId) external view returns (uint32[3] memory);
     function hasActiveSkill(uint256 tokenId, uint32 artId) external view returns (bool);
     function hasPassiveSkill(uint256 tokenId, uint32 artId) external view returns (bool);

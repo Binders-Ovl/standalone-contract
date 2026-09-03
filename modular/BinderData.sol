@@ -53,6 +53,12 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     error StaleBattleCheckpoint(uint256 tokenId, uint32 currentNonce, uint32 providedNonce);
     error BattleVitalsExceedMaximum(uint256 tokenId, uint16 currentHP, uint16 currentMP, uint16 maxHP, uint16 maxMP);
     error ActiveBattleBinding(uint256 tokenId, address battleProxy);
+    error ActiveFusionBinding(uint256 tokenId, address fusionMinter);
+    error UnauthorizedFusionMinter(address minter);
+    error FusionMinterHasActiveEscrows(address minter, uint256 activeCount);
+    error TokenNotEscrowedForFusion(uint256 tokenId, address expectedMinter, address actualOwner);
+    error InvalidPermanentMetadata(uint256 classId, uint8 rarityId, uint16 configVersion);
+    error InvalidPermanentVitals(uint16 currentHP, uint16 currentMP, uint16 maxHP, uint16 maxMP);
 
     uint256 public maxSupply = 1_000_000;
     uint128 internal supplyBuffer = 125;
@@ -71,6 +77,13 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     mapping(address => address) public battleProxyFactory;
     mapping(uint256 => address) public activeBattleProxy;
     mapping(uint256 => uint32) public battleCheckpointNonce;
+
+    /// @dev Fusion custody is bound to the minter that started it so an
+    /// outgoing minter can finish/rescue pending requests after a cutover.
+    mapping(address => bool) public authorizedFusionMinter;
+    mapping(address => uint256) public activeFusionCountByMinter;
+    mapping(uint256 => address) public activeFusionMinter;
+    mapping(address => bool) public authorizedBinderLogic;
 
     mapping(uint256 => binderStructs.NFTMetadata) private _tokenMetadata;
     mapping(uint256 => uint16) public classVersion;
@@ -100,9 +113,19 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     event BattleFactoryAuthorizationUpdated(address indexed factory, bool authorized);
     event BattleProxyRegistered(uint256 indexed tokenId, address indexed battleProxy, address indexed factory);
     event BattleProxyCleared(uint256 indexed tokenId, address indexed battleProxy, address indexed factory);
-    event BattleVitalsCheckpointed(uint256 indexed tokenId, address indexed battleProxy, uint16 currentHP, uint16 currentMP, uint32 nonce);
-    event BattleVitalsSettled(uint256 indexed tokenId, address indexed battleProxy, uint16 currentHP, uint16 currentMP, uint32 nonce);
-    event AdminPersistentVitalsUpdated(uint256 indexed tokenId, uint16 currentHP, uint16 currentMP, address indexed admin);
+    event BattleVitalsCheckpointed(
+        uint256 indexed tokenId, address indexed battleProxy, uint16 currentHP, uint16 currentMP, uint32 nonce
+    );
+    event BattleVitalsSettled(
+        uint256 indexed tokenId, address indexed battleProxy, uint16 currentHP, uint16 currentMP, uint32 nonce
+    );
+    event AdminPersistentVitalsUpdated(
+        uint256 indexed tokenId, uint16 currentHP, uint16 currentMP, address indexed admin
+    );
+    event FusionMinterAuthorizationUpdated(address indexed minter, bool authorized);
+    event FusionActivityRegistered(uint256 indexed tokenId, address indexed fusionMinter);
+    event FusionActivityCleared(uint256 indexed tokenId, address indexed fusionMinter);
+    event BinderLogicAuthorizationUpdated(address indexed logic, bool authorized);
 
     constructor(address initialOwner, string memory newBaseImageURI) ERC721("Binders", "UBIND") {
         if (bytes(newBaseImageURI).length > 0 && bytes(newBaseImageURI)[bytes(newBaseImageURI).length - 1] != "/") {
@@ -160,7 +183,9 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         string memory rarityName,
         binderStructs.StaticStats memory staticStats,
         binderStructs.DynamicStats memory dynamicStats
-    ) external onlyRole(MINTER_ROLE) returns (uint256) {
+    ) external returns (uint256) {
+        _requireMinterAuthority(msg.sender);
+        _validatePermanentMetadata(classId, rarityId, staticStats, dynamicStats);
         uint256 tokenId =
             _mintNFT(recipient, _buildMintMetadata(classId, className, rarityId, staticStats, dynamicStats));
         emit NFTMinted(recipient, tokenId, rarityId, rarityName, className);
@@ -175,7 +200,9 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         string memory rarityName,
         binderStructs.StaticStats memory staticStats,
         binderStructs.DynamicStats memory dynamicStats
-    ) external onlyRole(FUSION_ROLE) returns (uint256) {
+    ) external returns (uint256) {
+        _requireFusionAuthority(msg.sender);
+        _validatePermanentMetadata(classId, rarityId, staticStats, dynamicStats);
         uint256 tokenId =
             _mintNFT(recipient, _buildMintMetadata(classId, className, rarityId, staticStats, dynamicStats));
         emit NFTFusionMinted(recipient, tokenId, rarityId, rarityName, className);
@@ -191,6 +218,14 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         _requireActivityController(activityId, msg.sender);
         _requireCanStartActivity(tokenId);
         _activityState[tokenId] = binderStructs.ActivityState({activityId: activityId, lockedUntil: lockedUntil});
+        if (activityId == BinderIds.ACTIVITY_FUSION) {
+            if (!authorizedFusionMinter[msg.sender] || ownerOf(tokenId) != msg.sender) {
+                revert UnauthorizedFusionMinter(msg.sender);
+            }
+            activeFusionMinter[tokenId] = msg.sender;
+            activeFusionCountByMinter[msg.sender] += 1;
+            emit FusionActivityRegistered(tokenId, msg.sender);
+        }
         emit ActivityStarted(tokenId, activityId, lockedUntil);
         _emitMetadataUpdate(tokenId);
     }
@@ -201,6 +236,10 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         _requireToken(tokenId);
         uint8 activityId = _activityState[tokenId].activityId;
         if (activityId == 0) revert UnitAlreadyIdle(tokenId);
+        address battleProxy = activeBattleProxy[tokenId];
+        if (battleProxy != address(0)) revert ActiveBattleBinding(tokenId, battleProxy);
+        address fusionMinter = activeFusionMinter[tokenId];
+        if (fusionMinter != address(0)) revert ActiveFusionBinding(tokenId, fusionMinter);
         _requireActivityController(activityId, msg.sender);
         delete _activityState[tokenId];
         emit ActivityEnded(tokenId, activityId);
@@ -214,6 +253,8 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         if (activityId == 0) revert UnitAlreadyIdle(tokenId);
         address battleProxy = activeBattleProxy[tokenId];
         if (battleProxy != address(0)) revert ActiveBattleBinding(tokenId, battleProxy);
+        address fusionMinter = activeFusionMinter[tokenId];
+        if (fusionMinter != address(0)) revert ActiveFusionBinding(tokenId, fusionMinter);
         delete _activityState[tokenId];
         emit ActivityForceCleared(tokenId, activityId, msg.sender);
         _emitMetadataUpdate(tokenId);
@@ -241,6 +282,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         binderStructs.NFTMetadata storage meta = _tokenMetadata[tokenId];
         uint16 latestVersion = classVersion[meta.classId];
         if (meta.configVersion >= latestVersion) revert AlreadyUpgraded();
+        _validatePermanentMetadata(meta.classId, meta.rarityId, stats, dynamicStats);
 
         meta.staticStats = stats;
         meta.dynamicStats = dynamicStats;
@@ -252,10 +294,14 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     /// @notice Explicit development/emergency update for a persistent, non-Battle Binder.
     /// @dev Official BattleProxy vitals use provenance-checked checkpoint paths;
     /// this function must never mutate an active match behind its proxy's back.
-    function adminUpdatePersistentVitals(uint256 tokenId, uint16 currentHP, uint16 currentMP) external onlyRole(BATTLE_ROLE) {
+    function adminUpdatePersistentVitals(uint256 tokenId, uint16 currentHP, uint16 currentMP)
+        external
+        onlyRole(BATTLE_ROLE)
+    {
         _requireToken(tokenId);
         address battleProxy = activeBattleProxy[tokenId];
         if (battleProxy != address(0)) revert ActiveBattleBinding(tokenId, battleProxy);
+        if (!_isIdle(tokenId)) revert TokenBusy(tokenId, _activityState[tokenId].activityId);
         if (binderGraveyard != address(0) && ownerOf(tokenId) == binderGraveyard) revert TokenInGraveyard(tokenId);
         binderStructs.NFTMetadata storage meta = _tokenMetadata[tokenId];
         meta.dynamicStats.currentHP = currentHP > meta.dynamicStats.maxHP ? meta.dynamicStats.maxHP : currentHP;
@@ -283,12 +329,35 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         emit BattleFactoryAuthorizationUpdated(factory, authorized);
     }
 
+    /// @notice Approves a FusionMinter to begin custody activities and finish
+    /// its own pending requests after a future controller cutover.
+    function setAuthorizedFusionMinter(address minter, bool authorized) external onlyRole(CONFIG_ROLE) {
+        if (authorized) {
+            if (minter.code.length == 0) revert InvalidBattleFactory(minter);
+        } else if (activeFusionCountByMinter[minter] != 0) {
+            revert FusionMinterHasActiveEscrows(minter, activeFusionCountByMinter[minter]);
+        }
+        authorizedFusionMinter[minter] = authorized;
+        emit FusionMinterAuthorizationUpdated(minter, authorized);
+    }
+
+    /// @notice Authorizes a BinderLogic mint orchestrator without giving it
+    /// general configuration or administrative roles. Outgoing logic remains
+    /// authorized until an explicit post-pending-request retirement.
+    function setAuthorizedBinderLogic(address logic, bool authorized) external onlyRole(CONFIG_ROLE) {
+        if (authorized && logic.code.length == 0) revert InvalidBattleFactory(logic);
+        authorizedBinderLogic[logic] = authorized;
+        emit BinderLogicAuthorizationUpdated(logic, authorized);
+    }
+
     /// @notice Enables the canonical Factory gateway to bind a just-escrowed NFT to a recognized clone.
     function registerBattleProxy(uint256 tokenId, address battleProxy) external {
         _requireAuthorizedBattleFactory(msg.sender);
         if (!IBattleFactory(msg.sender).isBattleProxy(battleProxy)) revert InvalidBattleProxyRegistration(battleProxy);
         _requireToken(tokenId);
-        if (activeBattleProxy[tokenId] != address(0)) revert BattleProxyMismatch(tokenId, address(0), activeBattleProxy[tokenId]);
+        if (activeBattleProxy[tokenId] != address(0)) {
+            revert BattleProxyMismatch(tokenId, address(0), activeBattleProxy[tokenId]);
+        }
         address owner = ownerOf(tokenId);
         if (owner != battleProxy) revert BattleTokenNotEscrowed(tokenId, battleProxy, owner);
         uint8 activityId = _activityState[tokenId].activityId;
@@ -303,8 +372,9 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         emit BattleProxyRegistered(tokenId, battleProxy, msg.sender);
     }
 
-    /// @notice Clears a binding immediately before the Factory ends activity for a survivor.
-    function clearBattleProxy(uint256 tokenId, address battleProxy) external {
+    /// @notice Atomically ends a survivor's battle activity and its official
+    /// proxy binding. The recorded Factory remains eligible after cutover.
+    function endBattleActivity(uint256 tokenId, address battleProxy) external {
         _requireAuthorizedBattleFactory(msg.sender);
         _requireBattleBinding(tokenId, battleProxy, msg.sender);
         address owner = ownerOf(tokenId);
@@ -312,6 +382,25 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         uint8 activityId = _activityState[tokenId].activityId;
         if (activityId != BinderIds.ACTIVITY_BATTLE) revert BattleActivityRequired(tokenId, activityId);
         _clearBattleBinding(tokenId, battleProxy, msg.sender);
+        delete _activityState[tokenId];
+        emit ActivityEnded(tokenId, activityId);
+        _emitMetadataUpdate(tokenId);
+    }
+
+    /// @notice Atomically ends the Fusion activity owned by the minter that
+    /// originally took custody. It intentionally bypasses the current starter
+    /// controller so pending pre-cutover requests can be rescued safely.
+    function endFusionActivity(uint256 tokenId) external {
+        _requireToken(tokenId);
+        address fusionMinter = activeFusionMinter[tokenId];
+        if (fusionMinter != msg.sender) revert ActiveFusionBinding(tokenId, fusionMinter);
+        if (ownerOf(tokenId) != msg.sender) revert TokenNotEscrowedForFusion(tokenId, msg.sender, ownerOf(tokenId));
+        uint8 activityId = _activityState[tokenId].activityId;
+        if (activityId != BinderIds.ACTIVITY_FUSION) revert BattleActivityRequired(tokenId, activityId);
+        _clearFusionBinding(tokenId, fusionMinter);
+        delete _activityState[tokenId];
+        emit ActivityEnded(tokenId, activityId);
+        _emitMetadataUpdate(tokenId);
     }
 
     /// @notice Persists only dirty HP/MP values produced by their recognized live BattleProxy.
@@ -367,10 +456,15 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     }
 
     /// @notice Explicit fusion retirement path.
-    function tfToGraveyard(uint256 tokenId) external onlyRole(FUSION_ROLE) {
+    function tfToGraveyard(uint256 tokenId) external {
+        _requireFusionAuthority(msg.sender);
         _requireToken(tokenId);
         address battleProxy = activeBattleProxy[tokenId];
         if (battleProxy != address(0)) revert ActiveBattleBinding(tokenId, battleProxy);
+        address fusionMinter = activeFusionMinter[tokenId];
+        if (fusionMinter != msg.sender) revert ActiveFusionBinding(tokenId, fusionMinter);
+        if (ownerOf(tokenId) != msg.sender) revert TokenNotEscrowedForFusion(tokenId, msg.sender, ownerOf(tokenId));
+        _clearFusionBinding(tokenId, fusionMinter);
         _moveToGraveyard(tokenId);
     }
 
@@ -403,9 +497,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         if (owner != binderGraveyard) revert TokenNotInGraveyard(tokenId, owner);
 
         binderStructs.DynamicStats storage dynamicStats = _tokenMetadata[tokenId].dynamicStats;
-        if (
-            currentHP == 0 || currentHP > dynamicStats.maxHP || currentMP > dynamicStats.maxMP
-        ) {
+        if (currentHP == 0 || currentHP > dynamicStats.maxHP || currentMP > dynamicStats.maxMP) {
             revert InvalidResurrectionVitals(tokenId, currentHP, currentMP, dynamicStats.maxHP, dynamicStats.maxMP);
         }
         dynamicStats.currentHP = currentHP;
@@ -482,6 +574,16 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         _emitAllMetadataUpdate();
     }
 
+    /// @notice Rotates the narrowly scoped metadata-refresh authority used by
+    /// the canonical BinderSkills proxy without granting it CONFIG_ROLE.
+    function setMetadataRefreshModule(address previousModule, address newModule) external onlyRole(CONFIG_ROLE) {
+        if (newModule == address(0) || newModule.code.length == 0) revert BinderMetadataNotSet();
+        if (previousModule != address(0) && previousModule != newModule) {
+            _revokeRole(METADATA_REFRESH_ROLE, previousModule);
+        }
+        _grantRole(METADATA_REFRESH_ROLE, newModule);
+    }
+
     function setBaseImageURI(string memory newURI) external onlyOwner {
         if (bytes(newURI).length > 0 && bytes(newURI)[bytes(newURI).length - 1] != "/") revert InvalidUriFormat();
         baseImageURI = newURI;
@@ -543,11 +645,30 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         if (!authorizedBattleFactory[factory]) revert UnauthorizedBattleFactory(factory);
     }
 
+    function _requireFusionAuthority(address minter) internal view {
+        if (!authorizedFusionMinter[minter] && !hasRole(FUSION_ROLE, minter)) {
+            _checkRole(FUSION_ROLE, minter);
+        }
+    }
+
+    function _requireMinterAuthority(address logic) internal view {
+        if (!authorizedBinderLogic[logic] && !hasRole(MINTER_ROLE, logic)) {
+            _checkRole(MINTER_ROLE, logic);
+        }
+    }
+
     function _requireBattleBinding(uint256 tokenId, address battleProxy, address factory) internal view {
         address expectedProxy = activeBattleProxy[tokenId];
         if (expectedProxy != battleProxy) revert BattleProxyMismatch(tokenId, expectedProxy, battleProxy);
         address expectedFactory = battleProxyFactory[battleProxy];
         if (expectedFactory != factory) revert UnauthorizedBattleFactory(factory);
+    }
+
+    function _clearFusionBinding(uint256 tokenId, address fusionMinter) internal {
+        delete activeFusionMinter[tokenId];
+        if (activeFusionCountByMinter[fusionMinter] == 0) revert ActiveFusionBinding(tokenId, fusionMinter);
+        activeFusionCountByMinter[fusionMinter] -= 1;
+        emit FusionActivityCleared(tokenId, fusionMinter);
     }
 
     function _clearBattleBinding(uint256 tokenId, address battleProxy, address factory) internal {
@@ -603,6 +724,23 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         dynamicStats.currentHP = currentHP;
         dynamicStats.currentMP = currentMP;
         battleCheckpointNonce[tokenId] = checkpointNonce;
+    }
+
+    function _validatePermanentMetadata(
+        uint256 classId,
+        uint8 rarityId,
+        binderStructs.StaticStats memory,
+        binderStructs.DynamicStats memory dynamicStats
+    ) internal view {
+        uint16 version = classVersion[classId];
+        if (classId == 0 || rarityId == 0 || version == 0) {
+            revert InvalidPermanentMetadata(classId, rarityId, version);
+        }
+        if (dynamicStats.currentHP > dynamicStats.maxHP || dynamicStats.currentMP > dynamicStats.maxMP) {
+            revert InvalidPermanentVitals(
+                dynamicStats.currentHP, dynamicStats.currentMP, dynamicStats.maxHP, dynamicStats.maxMP
+            );
+        }
     }
 
     function _requireActivityController(uint8 activityId, address caller) internal view {

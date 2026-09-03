@@ -13,7 +13,9 @@ import "./supportContract/binderIds.sol";
 import "./interfaces/IBinderData.sol";
 import "./interfaces/IBook0fLife.sol";
 
-/** Struct for Stats - Class Config - FUsionRequest */
+/**
+ * Struct for Stats - Class Config - FUsionRequest
+ */
 
 // @notice: Array of stats that determine unit stats in following order
 // STR  determine pATK (Weapon Based  Value)        ==>     uint8[0]
@@ -24,7 +26,6 @@ import "./interfaces/IBook0fLife.sol";
 // WIS  Determine value of MP and mDef              ==>     uint8[5]
 // SPD  Determine priority of actions               ==>     uint8[6]
 // STA  Determine value of movement range           ==>     uint8[7]
-
 
 contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, ReentrancyGuard, IEntropyConsumer {
     bytes32 public constant FUSION_OVERLORD = keccak256("FUSION_OVERLORD");
@@ -47,15 +48,24 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     }
 
     mapping(uint256 => binderStructs.FusionRequest) private _fusionRequest;
-    mapping(uint256 => binderStructs.AdvancedFusionRequest) private _fusionRequestAdvanced;   // PlaceHolder not Gonna be used anytime soon
+    mapping(uint256 => binderStructs.AdvancedFusionRequest) private _fusionRequestAdvanced; // PlaceHolder not Gonna be used anytime soon
     mapping(uint64 => uint256) private _entropyToFusionId;
     mapping(uint256 => FusionStatus) public fusionStatus;
     mapping(uint256 => uint48) public fusionRequestedAt;
     mapping(uint256 => uint64) public fusionSequence;
+    uint256 public pendingFusionCount;
 
     event FusionRequested(uint256 indexed fusionId, address user, uint256 nftId1, uint256 nftId2);
     event FusionRescued(uint256 indexed fusionId, address indexed user, uint256 nftId1, uint256 nftId2);
-    event FusionResult(uint256 indexed fusionId, address indexed user, bool success, uint256 newTokenId, uint256 class1, uint256 class2, uint256 targetClass);
+    event FusionResult(
+        uint256 indexed fusionId,
+        address indexed user,
+        bool success,
+        uint256 newTokenId,
+        uint256 class1,
+        uint256 class2,
+        uint256 targetClass
+    );
     event BaseBinderUpdated(address newBinder);
     event Book0fLifeUpdated(address newFusionLibrary);
     event AdvancedFusionRequested(uint256 fusionId, address user, uint256[] nftIds, address[] catalysts); // Placeholder for Advanced fusion emission
@@ -68,9 +78,16 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     error FusionNotPending(uint256 fusionId, FusionStatus status);
     error FusionRescueNotReady(uint256 fusionId, uint48 availableAt);
     error UnauthorizedFusionRescue(uint256 fusionId, address caller);
+    error PendingFusionsPreventBinderDataChange(uint256 pendingCount);
+    error InvalidFusionDependency(address dependency);
 
-
-    constructor(address binderData_, address book0fLife_, address entropyAddress, address providerAddress, address initialOwner) {
+    constructor(
+        address binderData_,
+        address book0fLife_,
+        address entropyAddress,
+        address providerAddress,
+        address initialOwner
+    ) {
         transferOwnership(initialOwner);
         _grantRole(DEFAULT_ADMIN_ROLE, initialOwner);
         _grantRole(FUSION_OVERLORD, initialOwner);
@@ -94,8 +111,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         if (nftId1 == nftId2) revert IdenticalFusionTokens(nftId1);
 
         require(
-            binderData.ownerOf(nftId1) == msg.sender &&
-            binderData.ownerOf(nftId2) == msg.sender,
+            binderData.ownerOf(nftId1) == msg.sender && binderData.ownerOf(nftId2) == msg.sender,
             "Cannot sacrifice what u dont own"
         );
 
@@ -106,9 +122,11 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         if (recipe.outcomes.length == 0) revert FusionRecipeUnavailable(class1, class2);
 
         uint256 fusionId = ++nextFusionId;
-        _fusionRequest[fusionId] = binderStructs.FusionRequest({user: msg.sender, nftId1: nftId1, nftId2: nftId2, resolved: false});
+        _fusionRequest[fusionId] =
+            binderStructs.FusionRequest({user: msg.sender, nftId1: nftId1, nftId2: nftId2, resolved: false});
         fusionStatus[fusionId] = FusionStatus.PENDING;
         fusionRequestedAt[fusionId] = uint48(block.timestamp);
+        pendingFusionCount += 1;
 
         binderData.safeTransferFrom(msg.sender, address(this), nftId1);
         binderData.safeTransferFrom(msg.sender, address(this), nftId2);
@@ -121,7 +139,11 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     }
 
     // 2. Callback function for entropy request After user Initiate riteFusion Function and send entropy request to entropyCallback Function
-    function entropyCallback(uint64 sequenceNumber, address _providerAddress, bytes32 randomBytes) internal nonReentrant override {
+    function entropyCallback(uint64 sequenceNumber, address _providerAddress, bytes32 randomBytes)
+        internal
+        override
+        nonReentrant
+    {
         require(msg.sender == address(entropy), "Unauthorized");
         require(_providerAddress == entropyProvider, "Invalid provider");
 
@@ -137,13 +159,11 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
 
         request.resolved = true;
         fusionStatus[fusionId] = FusionStatus.RESOLVED;
+        pendingFusionCount -= 1;
         delete _entropyToFusionId[sequenceNumber];
 
         // Class Sorting
-        (uint256 class1, uint256 class2) = _sortMi(
-            binderData.getNFTClass(sId1),
-            binderData.getNFTClass(sId2)
-        );
+        (uint256 class1, uint256 class2) = _sortMi(binderData.getNFTClass(sId1), binderData.getNFTClass(sId2));
 
         // Block I: Calculate class ID and fusion Outcome
         (bool success, uint256 targetClass) = _getFusionOutcome(class1, class2, randomBytes);
@@ -172,9 +192,10 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         }
 
         fusionStatus[fusionId] = FusionStatus.RESCUED;
+        pendingFusionCount -= 1;
         delete _entropyToFusionId[fusionSequence[fusionId]];
-        binderData.endActivity(request.nftId1);
-        binderData.endActivity(request.nftId2);
+        binderData.endFusionActivity(request.nftId1);
+        binderData.endFusionActivity(request.nftId2);
         binderData.safeTransferFrom(address(this), request.user, request.nftId1);
         binderData.safeTransferFrom(address(this), request.user, request.nftId2);
         emit FusionRescued(fusionId, request.user, request.nftId1, request.nftId2);
@@ -183,7 +204,14 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     function getFusionRequest(uint256 fusionId)
         external
         view
-        returns (address user, uint256 nftId1, uint256 nftId2, uint48 requestedAt, uint64 sequenceNumber, FusionStatus status)
+        returns (
+            address user,
+            uint256 nftId1,
+            uint256 nftId2,
+            uint48 requestedAt,
+            uint64 sequenceNumber,
+            FusionStatus status
+        )
     {
         binderStructs.FusionRequest storage request = _fusionRequest[fusionId];
         return (
@@ -197,13 +225,17 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     }
 
     // 3. Calculate Outcome of riteFusion Function
-    function _calculateOutcome(uint256 class1, uint256 class2, bytes32 entropyBytes, uint256 outcomeClassId, uint16 successChance) internal pure
-        returns (bool success, uint256 targetClass) {
-
+    function _calculateOutcome(
+        uint256 class1,
+        uint256 class2,
+        bytes32 entropyBytes,
+        uint256 outcomeClassId,
+        uint16 successChance
+    ) internal pure returns (bool success, uint256 targetClass) {
         bool hasRecipe = outcomeClassId != 0;
 
-        uint256 successRand = uint256(entropyBytes) % 10000;    // 0 - 10000 (0.00% - 100.00%)
-        uint256 classRand = uint256(entropyBytes >> 128) % 10000;   // Randomized success chance for outcome class if fails
+        uint256 successRand = uint256(entropyBytes) % 10000; // 0 - 10000 (0.00% - 100.00%)
+        uint256 classRand = uint256(entropyBytes >> 128) % 10000; // Randomized success chance for outcome class if fails
 
         if (hasRecipe) {
             success = successRand < successChance;
@@ -215,8 +247,12 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     }
 
     // 4. Allocate Stats to riteFusion Function
-        function _allocateStats(binderStructs.ClassConfig memory config, bytes32 seed) internal pure returns (binderStructs.StaticStats memory stats) {
-        stats = binderStructs.StaticStats({ stats: config.minStats });
+    function _allocateStats(binderStructs.ClassConfig memory config, bytes32 seed)
+        internal
+        pure
+        returns (binderStructs.StaticStats memory stats)
+    {
+        stats = binderStructs.StaticStats({stats: config.minStats});
         bytes memory entropyBytes = abi.encodePacked(seed);
         uint8[8] memory statOrder = _generateAllocationOrder(seed);
         uint8[32] memory byteOrder = _generateBytesOrder(seed);
@@ -241,7 +277,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         }
 
         while (remainingPoints > 0) {
-            for (uint i = 0; i < 8 && remainingPoints > 0; i++) {
+            for (uint256 i = 0; i < 8 && remainingPoints > 0; i++) {
                 uint8 statIndex = statOrder[i];
                 uint8 current = stats.stats[statIndex];
                 uint8 maxAdd = config.maxStats[statIndex] - current;
@@ -255,34 +291,58 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     /* Internal Helper Functions */
 
     // Core | Helper Emit function because the @dev dumb enough to manage the stack depth of entropyCallback
-    function _emitFusionResult(uint256 fusionId, address user, bool success, uint256 newTokenId, uint256 class1, uint256 class2, uint256 targetClass) internal {
+    function _emitFusionResult(
+        uint256 fusionId,
+        address user,
+        bool success,
+        uint256 newTokenId,
+        uint256 class1,
+        uint256 class2,
+        uint256 targetClass
+    ) internal {
         emit FusionResult(fusionId, user, success, newTokenId, class1, class2, targetClass);
     }
 
     // Core | Helper to Resolve Outcome to reduce Stack Depth at entropyCallback
-    function _resolveOutcome(uint256 class1, uint256 class2, bytes32 randomBytes, binderStructs.FusionOutcome[] memory outcomes, uint16 successChance) internal pure returns (
-    bool success, uint256 targetClass) {
-        uint256 outcomeClassId = outcomes.length == 0
-            ? 0
-            : _selectOutcome(outcomes, randomBytes);
+    function _resolveOutcome(
+        uint256 class1,
+        uint256 class2,
+        bytes32 randomBytes,
+        binderStructs.FusionOutcome[] memory outcomes,
+        uint16 successChance
+    ) internal pure returns (bool success, uint256 targetClass) {
+        uint256 outcomeClassId = outcomes.length == 0 ? 0 : _selectOutcome(outcomes, randomBytes);
         return _calculateOutcome(class1, class2, randomBytes, outcomeClassId, successChance);
     }
 
     // Core | Helper to get Fusion Outcome to reduce Stack Depth at entropyCallback
-    function _getFusionOutcome(uint256 class1, uint256 class2, bytes32 randomBytes) internal view returns (bool success, uint256 targetClass) {
+    function _getFusionOutcome(uint256 class1, uint256 class2, bytes32 randomBytes)
+        internal
+        view
+        returns (bool success, uint256 targetClass)
+    {
         binderStructs.FusionRecipe memory recipe = book0fLife.getFusionRecipe(class1, class2);
         return _resolveOutcome(class1, class2, randomBytes, recipe.outcomes, recipe.successChance);
     }
 
     // Core | Helper to generate all necessary metadata for minting the new token at entropyCallback
-    function _getNFTDetailsAndStats(uint256 targetClass, bytes32 entropyBytes) internal view returns (
-        string memory className, uint8 rarityId, string memory rarityName, binderStructs.StaticStats memory stats, binderStructs.DynamicStats memory dynamicStats){
-            bytes32 statSeed = keccak256(abi.encodePacked(entropyBytes, "STATS"));
-            binderStructs.ClassConfig memory config;
-            (className, rarityId, rarityName, config) = _getTargetMetadata(targetClass);
-            stats = _allocateStats(config, statSeed);
-            dynamicStats = _buildDynStats(stats, config);
-        }
+    function _getNFTDetailsAndStats(uint256 targetClass, bytes32 entropyBytes)
+        internal
+        view
+        returns (
+            string memory className,
+            uint8 rarityId,
+            string memory rarityName,
+            binderStructs.StaticStats memory stats,
+            binderStructs.DynamicStats memory dynamicStats
+        )
+    {
+        bytes32 statSeed = keccak256(abi.encodePacked(entropyBytes, "STATS"));
+        binderStructs.ClassConfig memory config;
+        (className, rarityId, rarityName, config) = _getTargetMetadata(targetClass);
+        stats = _allocateStats(config, statSeed);
+        dynamicStats = _buildDynStats(stats, config);
+    }
 
     function _mintFusionResult(address user, uint256 targetClass, bytes32 entropyBytes) internal returns (uint256) {
         (
@@ -315,7 +375,11 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     }
 
     // InternalHelper function for multipleOut-cum probabilities
-    function _selectOutcome(binderStructs.FusionOutcome[] memory outcomes, bytes32 seed) internal pure returns (uint256 outcomeClassId) {
+    function _selectOutcome(binderStructs.FusionOutcome[] memory outcomes, bytes32 seed)
+        internal
+        pure
+        returns (uint256 outcomeClassId)
+    {
         if (outcomes.length == 0) return 0;
 
         bytes32 outcomeSeed = keccak256(abi.encodePacked(seed, "OUTCUM"));
@@ -330,9 +394,9 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         uint256 roll = uint256(outcomeSeed) % totalWeight;
         uint256 cum = 0;
 
-        for (uint8 i = 0; i < outcomes.length; i++){
+        for (uint8 i = 0; i < outcomes.length; i++) {
             cum += outcomes[i].multiProbChance;
-            if (roll < cum){
+            if (roll < cum) {
                 return outcomes[i].outcomeClassId;
             }
         }
@@ -340,8 +404,11 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     }
 
     // Internal Helper function to be used at entropyCallback _buildDynStats and _getTargetMetadata
-    function _buildDynStats(binderStructs.StaticStats memory stats, binderStructs.ClassConfig memory config
-    ) internal pure returns (binderStructs.DynamicStats memory) {
+    function _buildDynStats(binderStructs.StaticStats memory stats, binderStructs.ClassConfig memory config)
+        internal
+        pure
+        returns (binderStructs.DynamicStats memory)
+    {
         return binderStructs.DynamicStats({
             maxHP: stats.stats[4] * config.hpPerVit,
             maxMP: stats.stats[5] * config.mpPerWis,
@@ -350,21 +417,30 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         });
     }
 
-    function _getTargetMetadata (uint256 classId
-    ) internal view returns (string memory className, uint8 rarityId, string memory rarityName, binderStructs.ClassConfig memory config) {
+    function _getTargetMetadata(uint256 classId)
+        internal
+        view
+        returns (
+            string memory className,
+            uint8 rarityId,
+            string memory rarityName,
+            binderStructs.ClassConfig memory config
+        )
+    {
         rarityId = book0fLife.getClassRarityId(classId);
-        return (book0fLife.getClassName(classId), rarityId, book0fLife.getRarityName(rarityId), book0fLife.getClassConfig(classId));
+        return (
+            book0fLife.getClassName(classId),
+            rarityId,
+            book0fLife.getRarityName(rarityId),
+            book0fLife.getClassConfig(classId)
+        );
     }
 
     // Entropy Request Information - Requested by User thru riteFusion Function to be used in entropyCallback Function
     function _processEntropyRequest(uint256 fusionId) internal returns (uint64 sequence) {
         uint256 fee = entropy.getFeeV2(entropyProvider, 0);
         bytes32 userSeed = keccak256(abi.encodePacked(block.timestamp, fusionId));
-        sequence = entropy.requestV2{value: fee}(
-            entropyProvider,
-            userSeed,
-            0
-        );
+        sequence = entropy.requestV2{value: fee}(entropyProvider, userSeed, 0);
 
         _entropyToFusionId[sequence] = fusionId;
     }
@@ -378,10 +454,10 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     // Book0fLife assume class1 < class2 for all recipe keys
     // Tobe used in normal fusion with 2 Nft
     function _sortMi(uint256 a, uint256 b) internal pure returns (uint256, uint256) {
-        return a < b? (a, b) : (b, a);
+        return a < b ? (a, b) : (b, a);
     }
 
-/*
+    /*
     // This will not be used anytime soon please ignore
     // Sorting Hash of Class IDs to prevent duplicate Recipes to be used in riteFusion Function for advance FUSION
     // TODO : Implement this function lateron down the road, now just act as placeholder and reminder
@@ -437,16 +513,21 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
 
         emit AdvancedFusionRequested(fusionId, msg.sender, nftIds, catalystsAddrs);
     }
- */
+    */
 
     /* Admin Functions */
     // Less Likely to be used, used to update BinderData.sol and Book0fLife.sol
     function setBaseBinder(address newBinder) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (pendingFusionCount != 0) revert PendingFusionsPreventBinderDataChange(pendingFusionCount);
+        if (newBinder == address(0) || newBinder.code.length == 0) revert InvalidFusionDependency(newBinder);
         binderData = IBinderData(newBinder);
         emit BaseBinderUpdated(newBinder);
     }
 
     function setFusionLibrary(address newFusionLibrary) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newFusionLibrary == address(0) || newFusionLibrary.code.length == 0) {
+            revert InvalidFusionDependency(newFusionLibrary);
+        }
         book0fLife = IBook0fLife(newFusionLibrary);
         emit Book0fLifeUpdated(newFusionLibrary);
     }
@@ -456,7 +537,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         uint256 amount = address(this).balance;
         require(amount > 0, "No funds");
 
-        (bool sent, ) = recipient.call{value: amount}("");
+        (bool sent,) = recipient.call{value: amount}("");
         require(sent, "Withdrawal failed");
         emit NativeFundsWithdrawn(recipient, amount);
     }

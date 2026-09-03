@@ -62,7 +62,9 @@ contract Book0fLife is AccessControl {
     event ClassNationAssigned(uint256 indexed classId, uint8 indexed nationId, uint8 rarityId);
     event ClassNationRemoved(uint256 indexed classId, uint8 indexed nationId, uint8 rarityId);
     event ClassAcquisitionFlagsChanged(uint256 indexed classId, uint32 flags);
-    event EventMintScheduleChanged(uint256 indexed classId, bool enabled, uint48 startTime, uint48 endTime, uint32 slotDuration);
+    event EventMintScheduleChanged(
+        uint256 indexed classId, bool enabled, uint48 startTime, uint48 endTime, uint32 slotDuration
+    );
     event EventNationRotationChanged(uint256 indexed classId, uint8[] nationIds);
 
     error InvalidClassId();
@@ -229,7 +231,10 @@ contract Book0fLife is AccessControl {
     }
 
     /// @notice Chunk-safe migration import for rarity display records.
-    function importRarities(uint8[] calldata rarityIds, string[] calldata displayNames) external onlyRole(CONFIG_ROLE) {
+    function importRarities(uint8[] calldata rarityIds, string[] calldata displayNames)
+        external
+        onlyRole(CONFIG_ROLE)
+    {
         require(rarityIds.length == displayNames.length, "Mismatched rarities");
         for (uint256 i; i < rarityIds.length; ++i) {
             _registerRarity(rarityIds[i], displayNames[i]);
@@ -346,20 +351,28 @@ contract Book0fLife is AccessControl {
         emit ClassAcquisitionFlagsChanged(classId, flags);
     }
 
-    function setEventMintSchedule(uint256 classId, binderStructs.EventMintSchedule calldata schedule) external onlyRole(CONFIG_ROLE) {
+    function setEventMintSchedule(uint256 classId, binderStructs.EventMintSchedule calldata schedule)
+        external
+        onlyRole(CONFIG_ROLE)
+    {
         _requireClass(classId);
         if (schedule.enabled && schedule.startTime == 0) revert InvalidEventSchedule();
         if (schedule.endTime != 0 && schedule.endTime <= schedule.startTime) revert InvalidEventSchedule();
         if (_eventNationRotation[classId].length != 0 && schedule.slotDuration == 0) revert InvalidEventSchedule();
         _eventMintSchedule[classId] = schedule;
-        emit EventMintScheduleChanged(classId, schedule.enabled, schedule.startTime, schedule.endTime, schedule.slotDuration);
+        emit EventMintScheduleChanged(
+            classId, schedule.enabled, schedule.startTime, schedule.endTime, schedule.slotDuration
+        );
     }
 
     function setEventNationRotation(uint256 classId, uint8[] calldata nationIds) external onlyRole(CONFIG_ROLE) {
         _requireClass(classId);
         if (nationIds.length != 0 && _eventMintSchedule[classId].slotDuration == 0) revert InvalidEventSchedule();
         for (uint256 i = 0; i < nationIds.length; ++i) {
-            if (nationIds[i] == 0 || address(allegianceRegistry) == address(0) || !allegianceRegistry.isNationRegistered(nationIds[i])) {
+            if (
+                nationIds[i] == 0 || address(allegianceRegistry) == address(0)
+                    || !allegianceRegistry.isNationRegistered(nationIds[i])
+            ) {
                 revert InvalidNationId(nationIds[i]);
             }
             for (uint256 j = 0; j < i; ++j) {
@@ -416,10 +429,9 @@ contract Book0fLife is AccessControl {
         for (uint256 i = 0; i < classIds.length; ++i) {
             _requireClass(classIds[i]);
             require(multiProbChance[i] > 0, "Weight must be positive");
-            _fusionRecipe[a][b].outcomes.push(binderStructs.FusionOutcome({
-                outcomeClassId: classIds[i],
-                multiProbChance: multiProbChance[i]
-            }));
+            _fusionRecipe[a][b].outcomes.push(
+                binderStructs.FusionOutcome({outcomeClassId: classIds[i], multiProbChance: multiProbChance[i]})
+            );
             totalWeight += multiProbChance[i];
         }
         require(totalWeight == 10_000, "Weights must sum to 10000");
@@ -532,7 +544,9 @@ contract Book0fLife is AccessControl {
         uint256 available = sourceLength - offset;
         uint256 pageLength = limit < available ? limit : available;
         binderStructs.ClassPair[] memory page = new binderStructs.ClassPair[](pageLength);
-        for (uint256 i; i < pageLength; ++i) page[i] = _allFusionPairs[offset + i];
+        for (uint256 i; i < pageLength; ++i) {
+            page[i] = _allFusionPairs[offset + i];
+        }
         return page;
     }
 
@@ -575,7 +589,11 @@ contract Book0fLife is AccessControl {
         return _classConfigsByVersion[classId][classVersion[classId]];
     }
 
-    function getClassConfigAtVersion(uint256 classId, uint16 version) external view returns (binderStructs.ClassConfig memory) {
+    function getClassConfigAtVersion(uint256 classId, uint16 version)
+        external
+        view
+        returns (binderStructs.ClassConfig memory)
+    {
         _requireClass(classId);
         require(_configVersionExists[classId][version], "Unknown config version");
         return _classConfigsByVersion[classId][version];
@@ -586,8 +604,12 @@ contract Book0fLife is AccessControl {
         return classVersion[classId];
     }
 
-    function getFusionRecipe(uint256 class1, uint256 class2) external view returns (binderStructs.FusionRecipe memory) {
-        require(hasRole(DEFAULT_ADMIN_ROLE, msg.sender) || msg.sender == currentFusionMinter, "Access denied");
+    function getFusionRecipe(uint256 class1, uint256 class2)
+        external
+        view
+        returns (binderStructs.FusionRecipe memory)
+    {
+        require(hasRole(DEFAULT_ADMIN_ROLE, msg.sender) || hasRole(FUSION_MINTER, msg.sender), "Access denied");
         (uint256 a, uint256 b) = _sortMi(class1, class2);
         return _fusionRecipe[a][b];
     }
@@ -605,7 +627,12 @@ contract Book0fLife is AccessControl {
         return result;
     }
 
-    function getAllClassConfigs() external view onlyRole(DEFAULT_ADMIN_ROLE) returns (binderStructs.ClassConfig[] memory) {
+    function getAllClassConfigs()
+        external
+        view
+        onlyRole(DEFAULT_ADMIN_ROLE)
+        returns (binderStructs.ClassConfig[] memory)
+    {
         binderStructs.ClassConfig[] memory configs = new binderStructs.ClassConfig[](_allClassIds.length);
         for (uint256 i = 0; i < _allClassIds.length; ++i) {
             uint256 classId = _allClassIds[i];
@@ -614,16 +641,18 @@ contract Book0fLife is AccessControl {
         return configs;
     }
 
-    function getAllSimpleFusionRecipes() external view onlyRole(DEFAULT_ADMIN_ROLE) returns (binderStructs.AllSimpleFusionRecipe[] memory) {
-        binderStructs.AllSimpleFusionRecipe[] memory result = new binderStructs.AllSimpleFusionRecipe[](_allFusionPairs.length);
+    function getAllSimpleFusionRecipes()
+        external
+        view
+        onlyRole(DEFAULT_ADMIN_ROLE)
+        returns (binderStructs.AllSimpleFusionRecipe[] memory)
+    {
+        binderStructs.AllSimpleFusionRecipe[] memory result =
+            new binderStructs.AllSimpleFusionRecipe[](_allFusionPairs.length);
         for (uint256 i = 0; i < _allFusionPairs.length; ++i) {
             binderStructs.ClassPair memory pair = _allFusionPairs[i];
             (uint256 a, uint256 b) = _sortMi(pair.class1, pair.class2);
-            result[i] = binderStructs.AllSimpleFusionRecipe({
-                class1: a,
-                class2: b,
-                recipe: _fusionRecipe[a][b]
-            });
+            result[i] = binderStructs.AllSimpleFusionRecipe({class1: a, class2: b, recipe: _fusionRecipe[a][b]});
         }
         return result;
     }
@@ -639,20 +668,29 @@ contract Book0fLife is AccessControl {
     }
 
     function changeFusionMinterRole(address newFusionMinterRole) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newFusionMinterRole != address(0) && currentFusionMinter != newFusionMinterRole, "Invalid fusion minter");
-        revokeRole(FUSION_MINTER, currentFusionMinter);
+        require(
+            newFusionMinterRole != address(0) && currentFusionMinter != newFusionMinterRole, "Invalid fusion minter"
+        );
         grantRole(FUSION_MINTER, newFusionMinterRole);
         currentFusionMinter = newFusionMinterRole;
         emit FusionMinterRoleChanged(msg.sender, newFusionMinterRole);
     }
 
+    /// @notice Sets the canonical minter without revoking old minters. An
+    /// outgoing minter must retain read authority until each pending entropy
+    /// callback has reached its terminal lifecycle state.
+    function setFusionMinter(address newFusionMinter) external onlyRole(CONFIG_ROLE) {
+        require(newFusionMinter != address(0) && currentFusionMinter != newFusionMinter, "Invalid fusion minter");
+        _grantRole(FUSION_MINTER, newFusionMinter);
+        currentFusionMinter = newFusionMinter;
+        emit FusionMinterRoleChanged(msg.sender, newFusionMinter);
+    }
+
     // === Internal helpers ===
 
-    function _addClassConfigVersion(
-        uint256 classId,
-        binderStructs.ClassConfig memory config,
-        uint16 newVersion
-    ) internal {
+    function _addClassConfigVersion(uint256 classId, binderStructs.ClassConfig memory config, uint16 newVersion)
+        internal
+    {
         _requireClass(classId);
         require(newVersion > classVersion[classId], "Invalid version");
         _validateClassConfig(config);
@@ -668,7 +706,9 @@ contract Book0fLife is AccessControl {
         uint256 available = sourceLength - offset;
         uint256 pageLength = limit < available ? limit : available;
         uint8[] memory page = new uint8[](pageLength);
-        for (uint256 i; i < pageLength; ++i) page[i] = _allRarityIds[offset + i];
+        for (uint256 i; i < pageLength; ++i) {
+            page[i] = _allRarityIds[offset + i];
+        }
         return page;
     }
 
@@ -678,22 +718,34 @@ contract Book0fLife is AccessControl {
         uint256 available = sourceLength - offset;
         uint256 pageLength = limit < available ? limit : available;
         uint256[] memory page = new uint256[](pageLength);
-        for (uint256 i; i < pageLength; ++i) page[i] = _allClassIds[offset + i];
+        for (uint256 i; i < pageLength; ++i) {
+            page[i] = _allClassIds[offset + i];
+        }
         return page;
     }
 
-    function _pageClassVersions(uint256 classId, uint256 offset, uint256 limit) internal view returns (uint16[] memory) {
+    function _pageClassVersions(uint256 classId, uint256 offset, uint256 limit)
+        internal
+        view
+        returns (uint16[] memory)
+    {
         uint16[] storage versions = _classConfigVersions[classId];
         uint256 sourceLength = versions.length;
         if (offset >= sourceLength || limit == 0) return new uint16[](0);
         uint256 available = sourceLength - offset;
         uint256 pageLength = limit < available ? limit : available;
         uint16[] memory page = new uint16[](pageLength);
-        for (uint256 i; i < pageLength; ++i) page[i] = versions[offset + i];
+        for (uint256 i; i < pageLength; ++i) {
+            page[i] = versions[offset + i];
+        }
         return page;
     }
 
-    function _isClassEventMintEligible(uint256 classId, uint8 playerNationId, uint32 flags) internal view returns (bool) {
+    function _isClassEventMintEligible(uint256 classId, uint8 playerNationId, uint32 flags)
+        internal
+        view
+        returns (bool)
+    {
         if ((flags & ACQ_EVENT_MINT) == 0) return false;
         binderStructs.EventMintSchedule memory schedule = _eventMintSchedule[classId];
         if (!schedule.enabled || schedule.startTime == 0 || block.timestamp < schedule.startTime) return false;

@@ -8,6 +8,7 @@ import "../supportContract/binderStructs.sol";
 /// @dev Deliberately excludes administrative role management and renderer configuration.
 interface IBinderData is IERC721 {
     function binderMetadataAddress() external view returns (address);
+    function binderGraveyard() external view returns (address);
     function _mintRandomNFT(
         address recipient,
         uint256 classId,
@@ -32,6 +33,8 @@ interface IBinderData is IERC721 {
     function resurrectFromGraveyard(uint256 tokenId, address recipient, uint16 currentHP, uint16 currentMP) external;
     function startActivity(uint256 tokenId, uint8 activityId, uint48 lockedUntil) external;
     function endActivity(uint256 tokenId) external;
+    function endBattleActivity(uint256 tokenId, address battleProxy) external;
+    function endFusionActivity(uint256 tokenId) external;
     function updateNFTStats(
         uint256 tokenId,
         binderStructs.StaticStats calldata stats,
@@ -39,7 +42,6 @@ interface IBinderData is IERC721 {
     ) external;
     function adminUpdatePersistentVitals(uint256 tokenId, uint16 currentHP, uint16 currentMP) external;
     function registerBattleProxy(uint256 tokenId, address battleProxy) external;
-    function clearBattleProxy(uint256 tokenId, address battleProxy) external;
     function checkpointBattleVitals(
         uint256[] calldata tokenIds,
         uint16[] calldata hpValues,
@@ -56,6 +58,11 @@ interface IBinderData is IERC721 {
     function refreshAllMetadata() external;
     function refreshMetadata(uint256 tokenId) external;
     function setBinderMetadata(address metadataAddress) external;
+    function setMetadataRefreshModule(address previousModule, address newModule) external;
+    function setActivityController(uint8 activityId, address controller) external;
+    function setAuthorizedBattleFactory(address factory, bool authorized) external;
+    function setAuthorizedFusionMinter(address minter, bool authorized) external;
+    function setAuthorizedBinderLogic(address logic, bool authorized) external;
 
     function getUnitState(uint256 tokenId) external view returns (binderStructs.UnitStateView memory);
     function getNFTClass(uint256 tokenId) external view returns (uint256);
@@ -66,5 +73,9 @@ interface IBinderData is IERC721 {
     function classVersion(uint256 classId) external view returns (uint16);
     function baseImageURI() external view returns (string memory);
     function activeBattleProxy(uint256 tokenId) external view returns (address);
+    function activeFusionMinter(uint256 tokenId) external view returns (address);
+    function authorizedBattleFactory(address factory) external view returns (bool);
+    function authorizedFusionMinter(address minter) external view returns (bool);
+    function authorizedBinderLogic(address logic) external view returns (bool);
     function battleCheckpointNonce(uint256 tokenId) external view returns (uint32);
 }

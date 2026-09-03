@@ -3,6 +3,17 @@ pragma solidity ^0.8.24;
 
 /// @notice Read and configuration surface for the canonical Binders module registry.
 interface ICentralConsole {
+    struct WiringStatus {
+        bool binderDataMetadataMatch;
+        bool binderSkillsPairMatch;
+        bool metadataDependenciesMatch;
+        bool bookLifeDependenciesMatch;
+        bool battleFactoryMatch;
+        bool battleActivityControllerMatch;
+        bool fusionActivityControllerMatch;
+        bool allegianceDependenciesMatch;
+    }
+
     function binderData() external view returns (address);
     function binderSkills() external view returns (address);
     function binderMetadata() external view returns (address);
@@ -31,4 +42,5 @@ interface ICentralConsole {
     function setBattleFactory(address moduleAddress, uint32 implementationVersion) external;
     function setAllegianceRegistry(address moduleAddress) external;
     function setActivityModule(uint8 activityId, address moduleAddress) external;
+    function getWiringStatus() external view returns (WiringStatus memory);
 }

@@ -7,6 +7,7 @@ import "./interfaces/IBinderData.sol";
 import "./interfaces/IBook0fLife.sol";
 
 contract ScaleOfBalance is AccessControl {
+    bytes32 public constant CONFIG_ROLE = keccak256("CONFIG_ROLE");
     IBinderData public binderData;
     IBook0fLife public book0fLife;
 
@@ -22,14 +23,23 @@ contract ScaleOfBalance is AccessControl {
     );
     event upgradeSuccesful(address indexed user, uint256 indexed tokenId);
     event upgradeFailed(address indexed user, uint256 indexed tokenId, string reason);
+    event Book0fLifeUpdated(address indexed book);
 
     constructor(address _binderData, address _book0fLife) {
         binderData = IBinderData(_binderData);
         book0fLife = IBook0fLife(_book0fLife);
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(CONFIG_ROLE, msg.sender);
     }
 
     // ================== PUBLIC FUNCTIONS ==================
+
+    function setBook0fLife(address newBook) external onlyRole(CONFIG_ROLE) {
+        require(newBook != address(0) && newBook.code.length != 0, "Invalid book");
+        book0fLife = IBook0fLife(newBook);
+        emit Book0fLifeUpdated(newBook);
+    }
+
     // 1. Upgrade NFT By user
     function upgradeNFT(uint256 tokenId) external {
         _upgradeNFTFor(msg.sender, tokenId);

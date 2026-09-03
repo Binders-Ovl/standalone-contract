@@ -5,7 +5,9 @@ import "../supportContract/binderStructs.sol";
 
 /// @notice Cross-module API for current Book0fLife definitions and configuration.
 interface IBook0fLife {
+    function allegianceRegistry() external view returns (address);
     function setAllegianceRegistry(address registry) external;
+    function setFusionMinter(address fusionMinter) external;
     function registerRarity(uint8 rarityId, string calldata displayName) external;
     function setRarityName(uint8 rarityId, string calldata displayName) external;
     function addNewClass(
@@ -53,6 +55,9 @@ interface IBook0fLife {
         view
         returns (binderStructs.ClassConfig memory);
     function getClassVersion(uint256 classId) external view returns (uint16);
-    function getFusionRecipe(uint256 class1, uint256 class2) external view returns (binderStructs.FusionRecipe memory);
+    function getFusionRecipe(uint256 class1, uint256 class2)
+        external
+        view
+        returns (binderStructs.FusionRecipe memory);
     function hasClassAcquisition(uint256 classId, uint32 flagMask) external view returns (bool);
 }

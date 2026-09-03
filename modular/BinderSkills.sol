@@ -10,6 +10,7 @@ import "./supportContract/binderStructs.sol";
 import "./interfaces/IBinderData.sol";
 import "./interfaces/IBinderSkills.sol";
 import "./interfaces/ICentralConsole.sol";
+import "./interfaces/IBook0fArts.sol";
 
 /// @notice Canonical persistent learned-skill state for the Binder collection.
 /// @dev Deploy this implementation behind an OZ 4.8 ERC1967/UUPS proxy. The
@@ -37,13 +38,24 @@ contract BinderSkills is Initializable, AccessControl, UUPSUpgradeable, IBinderS
     event PassiveSkillLearned(uint256 indexed tokenId, uint32 indexed artId);
     event CentralConsoleUpdated(address indexed previousConsole, address indexed newConsole);
 
+    error ArtDoesNotExist(uint32 artId);
+    error ArtNotEnabled(uint32 artId, uint16 version);
+    error ArtTypeMismatch(uint32 artId, uint8 expectedType, uint8 actualType);
+    error ArtClassIneligible(uint256 tokenId, uint256 classId, uint32 artId, uint16 version);
+    error UnitNotReadyToLearn(uint256 tokenId);
+    error UnitInGraveyard(uint256 tokenId);
+    error IncompatibleSkillCategory(uint256 tokenId, uint32 artId);
+
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
 
     /// @notice Initializes exactly one BinderSkills proxy against the canonical BinderData collection.
-    function initialize(address initialAdmin, address binderDataAddress, address centralConsoleAddress) external initializer {
+    function initialize(address initialAdmin, address binderDataAddress, address centralConsoleAddress)
+        external
+        initializer
+    {
         if (initialAdmin == address(0) || binderDataAddress == address(0) || centralConsoleAddress == address(0)) {
             revert CanonicalPairMismatch(address(0), binderDataAddress);
         }
@@ -72,7 +84,10 @@ contract BinderSkills is Initializable, AccessControl, UUPSUpgradeable, IBinderS
     function grantMoveSet(uint256 tokenId, uint32 artId) external onlyRole(SKILL_GRANTER_ROLE) {
         _requireCanonicalPair();
         _requireIdleExisting(tokenId);
-        _requireArtId(artId);
+        _requireLearnableArt(tokenId, artId, BinderIds.ART_TYPE_MOVE_SET);
+        if (_hasActiveSkill[tokenId][artId] || _hasPassiveSkill[tokenId][artId]) {
+            revert IncompatibleSkillCategory(tokenId, artId);
+        }
 
         uint32[3] storage moveSets = _moveSets[tokenId];
         for (uint8 slot; slot < BinderIds.MOVE_SET_SLOTS; ++slot) {
@@ -92,7 +107,10 @@ contract BinderSkills is Initializable, AccessControl, UUPSUpgradeable, IBinderS
     function grantActiveSkill(uint256 tokenId, uint32 artId) external onlyRole(SKILL_GRANTER_ROLE) {
         _requireCanonicalPair();
         _requireIdleExisting(tokenId);
-        _requireArtId(artId);
+        _requireLearnableArt(tokenId, artId, BinderIds.ART_TYPE_ACTIVE);
+        if (_hasPassiveSkill[tokenId][artId] || _hasMoveSet(tokenId, artId)) {
+            revert IncompatibleSkillCategory(tokenId, artId);
+        }
         if (_hasActiveSkill[tokenId][artId]) revert SkillAlreadyLearned(tokenId, artId);
 
         _hasActiveSkill[tokenId][artId] = true;
@@ -105,7 +123,10 @@ contract BinderSkills is Initializable, AccessControl, UUPSUpgradeable, IBinderS
     function grantPassiveSkill(uint256 tokenId, uint32 artId) external onlyRole(SKILL_GRANTER_ROLE) {
         _requireCanonicalPair();
         _requireIdleExisting(tokenId);
-        _requireArtId(artId);
+        _requireLearnableArt(tokenId, artId, BinderIds.ART_TYPE_PASSIVE);
+        if (_hasActiveSkill[tokenId][artId] || _hasMoveSet(tokenId, artId)) {
+            revert IncompatibleSkillCategory(tokenId, artId);
+        }
         if (_hasPassiveSkill[tokenId][artId]) revert SkillAlreadyLearned(tokenId, artId);
 
         _hasPassiveSkill[tokenId][artId] = true;
@@ -205,21 +226,55 @@ contract BinderSkills is Initializable, AccessControl, UUPSUpgradeable, IBinderS
         _requireTokenExists(tokenId);
         binderStructs.UnitStateView memory state = IBinderData(binderData).getUnitState(tokenId);
         if (!state.idle) revert UnitNotIdle(tokenId, state.activity.activityId);
+        if (!state.readyToArm) revert UnitNotReadyToLearn(tokenId);
+        address graveyard = IBinderData(binderData).binderGraveyard();
+        if (graveyard != address(0) && IBinderData(binderData).ownerOf(tokenId) == graveyard) {
+            revert UnitInGraveyard(tokenId);
+        }
     }
 
     function _requireTokenExists(uint256 tokenId) internal view {
         IBinderData(binderData).ownerOf(tokenId);
     }
 
+    function _requireLearnableArt(uint256 tokenId, uint32 artId, uint8 expectedType) internal view {
+        _requireArtId(artId);
+        address artsAddress = ICentralConsole(centralConsole).book0fArts();
+        if (artsAddress == address(0) || artsAddress.code.length == 0) revert ArtDoesNotExist(artId);
+        IBook0fArts arts = IBook0fArts(artsAddress);
+        if (!arts.artExists(artId)) revert ArtDoesNotExist(artId);
+        binderStructs.ArtDefinition memory definition = arts.getArtDefinition(artId);
+        if (definition.version == 0 || !definition.enabled) revert ArtNotEnabled(artId, definition.version);
+        if (definition.artTypeId != expectedType) {
+            revert ArtTypeMismatch(artId, expectedType, definition.artTypeId);
+        }
+        uint256 classId = IBinderData(binderData).getNFTClass(tokenId);
+        if (!arts.isClassEligible(artId, definition.version, classId)) {
+            revert ArtClassIneligible(tokenId, classId, artId, definition.version);
+        }
+    }
+
     function _requireArtId(uint32 artId) internal pure {
         if (artId == 0) revert InvalidArtId(artId);
+    }
+
+    function _hasMoveSet(uint256 tokenId, uint32 artId) internal view returns (bool) {
+        uint32[3] storage moveSets = _moveSets[tokenId];
+        for (uint256 slot; slot < BinderIds.MOVE_SET_SLOTS; ++slot) {
+            if (moveSets[slot] == artId) return true;
+        }
+        return false;
     }
 
     function _refreshTokenMetadata(uint256 tokenId) internal {
         IBinderData(binderData).refreshMetadata(tokenId);
     }
 
-    function _page(uint32[] storage source, uint256 offset, uint256 limit) internal view returns (uint32[] memory page) {
+    function _page(uint32[] storage source, uint256 offset, uint256 limit)
+        internal
+        view
+        returns (uint32[] memory page)
+    {
         uint256 sourceLength = source.length;
         if (offset >= sourceLength || limit == 0) return new uint32[](0);
 

@@ -83,7 +83,9 @@ contract BattleFactory is AccessControl, IBattleFactory {
     error BattleInvitationWasCancelled(uint256 invitationId);
     error PartyAlreadySubmitted(uint256 invitationId, address participant);
     error DuplicateInvitationToken(uint256 invitationId, uint256 tokenId);
-    error InvitationTokenOwnerMismatch(uint256 invitationId, uint256 tokenId, address expectedOwner, address actualOwner);
+    error InvitationTokenOwnerMismatch(
+        uint256 invitationId, uint256 tokenId, address expectedOwner, address actualOwner
+    );
     error InvitationTokenNotReady(uint256 invitationId, uint256 tokenId);
     error BattleTransferNotApproved(uint256 invitationId, uint256 tokenId, address owner);
     error BattleTokenNotEscrowed(uint256 tokenId, address expectedProxy, address actualOwner);
@@ -93,7 +95,9 @@ contract BattleFactory is AccessControl, IBattleFactory {
         if (initialAdmin == address(0) || centralConsoleAddress.code.length == 0) {
             revert InvalidInitialOwner(initialAdmin);
         }
-        if (battleImplementationAddress.code.length == 0) revert InvalidBattleImplementation(battleImplementationAddress);
+        if (battleImplementationAddress.code.length == 0) {
+            revert InvalidBattleImplementation(battleImplementationAddress);
+        }
         centralConsole = ICentralConsole(centralConsoleAddress);
         battleImplementation = battleImplementationAddress;
         _grantRole(DEFAULT_ADMIN_ROLE, initialAdmin);
@@ -103,10 +107,12 @@ contract BattleFactory is AccessControl, IBattleFactory {
     /// @notice Creates an expiring invitation and records the challenger's own party.
     /// @dev Ownership is checked here and rechecked at activation. ERC-721 approval
     /// permits the later transfer but never substitutes for this explicit call.
-    function createBattleInvitation(address opponent, uint32 mapId, uint48 expiresAt, PartySubmission calldata challengerParty)
-        external
-        returns (uint256 invitationId)
-    {
+    function createBattleInvitation(
+        address opponent,
+        uint32 mapId,
+        uint48 expiresAt,
+        PartySubmission calldata challengerParty
+    ) external returns (uint256 invitationId) {
         _requireCanonicalFactory();
         if (opponent == address(0) || opponent == msg.sender) revert InvalidInvitationOpponent(opponent);
         if (expiresAt <= block.timestamp) revert InvalidInvitationExpiry(expiresAt);
@@ -149,7 +155,10 @@ contract BattleFactory is AccessControl, IBattleFactory {
         BattleInvitation storage invitation = _getInvitation(invitationId);
         if (invitation.accepted) revert BattleInvitationAlreadyAccepted(invitationId);
         if (invitation.cancelled) revert BattleInvitationWasCancelled(invitationId);
-        if (msg.sender != invitation.challenger && msg.sender != invitation.opponent && block.timestamp < invitation.expiresAt) {
+        if (
+            msg.sender != invitation.challenger && msg.sender != invitation.opponent
+                && block.timestamp < invitation.expiresAt
+        ) {
             revert UnauthorizedInvitationParty(invitationId, invitation.challenger, msg.sender);
         }
         invitation.cancelled = true;
@@ -163,7 +172,12 @@ contract BattleFactory is AccessControl, IBattleFactory {
     function getPartySubmission(uint256 invitationId, bool challenger)
         external
         view
-        returns (uint256[] memory tokenIds, uint16[] memory spawnTileIds, uint32[][] memory selectedArtIds, bool submitted)
+        returns (
+            uint256[] memory tokenIds,
+            uint16[] memory spawnTileIds,
+            uint32[][] memory selectedArtIds,
+            bool submitted
+        )
     {
         _getInvitation(invitationId);
         PartySubmission storage party = challenger ? _challengerParties[invitationId] : _opponentParties[invitationId];
@@ -214,13 +228,18 @@ contract BattleFactory is AccessControl, IBattleFactory {
             binderData.startActivity(tokenId, BinderIds.ACTIVITY_BATTLE, 0);
             binderData.registerBattleProxy(tokenId, clone);
         }
-        emit BattleCreated(clone, invitationId, invitation.mapId, map.version, address(book0fArts), address(book0fRealms), count);
+        emit BattleCreated(
+            clone, invitationId, invitation.mapId, map.version, address(book0fArts), address(book0fRealms), count
+        );
         return clone;
     }
 
-    function _storeParty(uint256 invitationId, PartySubmission storage destination, PartySubmission calldata party, address participant)
-        internal
-    {
+    function _storeParty(
+        uint256 invitationId,
+        PartySubmission storage destination,
+        PartySubmission calldata party,
+        address participant
+    ) internal {
         if (destination.submitted) revert PartyAlreadySubmitted(invitationId, participant);
         uint256 count = party.tokenIds.length;
         if (count == 0 || count > 6) revert InvalidBattleParticipantCount(count);
@@ -252,7 +271,9 @@ contract BattleFactory is AccessControl, IBattleFactory {
         for (uint256 challengerIndex; challengerIndex < challengerParty.tokenIds.length; ++challengerIndex) {
             uint256 tokenId = challengerParty.tokenIds[challengerIndex];
             for (uint256 opponentIndex; opponentIndex < opponentParty.tokenIds.length; ++opponentIndex) {
-                if (tokenId == opponentParty.tokenIds[opponentIndex]) revert DuplicateInvitationToken(invitationId, tokenId);
+                if (tokenId == opponentParty.tokenIds[opponentIndex]) {
+                    revert DuplicateInvitationToken(invitationId, tokenId);
+                }
             }
         }
     }
@@ -271,7 +292,8 @@ contract BattleFactory is AccessControl, IBattleFactory {
             }
             binderStructs.UnitStateView memory state = binderData.getUnitState(tokenId);
             if (!state.idle || !state.readyToArm) revert InvitationTokenNotReady(invitationId, tokenId);
-            if (binderData.getApproved(tokenId) != address(this) && !binderData.isApprovedForAll(owner, address(this))) {
+            if (binderData.getApproved(tokenId) != address(this) && !binderData.isApprovedForAll(owner, address(this)))
+            {
                 revert BattleTransferNotApproved(invitationId, tokenId, owner);
             }
         }
@@ -284,7 +306,9 @@ contract BattleFactory is AccessControl, IBattleFactory {
     {
         uint256 challengerCount = challengerParty.tokenIds.length;
         tokenIds = new uint256[](challengerCount + opponentParty.tokenIds.length);
-        for (uint256 index; index < challengerCount; ++index) tokenIds[index] = challengerParty.tokenIds[index];
+        for (uint256 index; index < challengerCount; ++index) {
+            tokenIds[index] = challengerParty.tokenIds[index];
+        }
         for (uint256 index; index < opponentParty.tokenIds.length; ++index) {
             tokenIds[challengerCount + index] = opponentParty.tokenIds[index];
         }
@@ -297,7 +321,9 @@ contract BattleFactory is AccessControl, IBattleFactory {
     {
         uint256 challengerCount = challengerParty.spawnTileIds.length;
         spawnTileIds = new uint16[](challengerCount + opponentParty.spawnTileIds.length);
-        for (uint256 index; index < challengerCount; ++index) spawnTileIds[index] = challengerParty.spawnTileIds[index];
+        for (uint256 index; index < challengerCount; ++index) {
+            spawnTileIds[index] = challengerParty.spawnTileIds[index];
+        }
         for (uint256 index; index < opponentParty.spawnTileIds.length; ++index) {
             spawnTileIds[challengerCount + index] = opponentParty.spawnTileIds[index];
         }
@@ -310,7 +336,9 @@ contract BattleFactory is AccessControl, IBattleFactory {
     {
         uint256 challengerCount = challengerParty.selectedArtIds.length;
         selectedArtIds = new uint32[][](challengerCount + opponentParty.selectedArtIds.length);
-        for (uint256 index; index < challengerCount; ++index) selectedArtIds[index] = challengerParty.selectedArtIds[index];
+        for (uint256 index; index < challengerCount; ++index) {
+            selectedArtIds[index] = challengerParty.selectedArtIds[index];
+        }
         for (uint256 index; index < opponentParty.selectedArtIds.length; ++index) {
             selectedArtIds[challengerCount + index] = opponentParty.selectedArtIds[index];
         }
@@ -321,7 +349,11 @@ contract BattleFactory is AccessControl, IBattleFactory {
         if (invitation.challenger == address(0)) revert UnknownBattleInvitation(invitationId);
     }
 
-    function _requireActiveInvitation(uint256 invitationId) internal view returns (BattleInvitation storage invitation) {
+    function _requireActiveInvitation(uint256 invitationId)
+        internal
+        view
+        returns (BattleInvitation storage invitation)
+    {
         invitation = _getInvitation(invitationId);
         if (invitation.cancelled) revert BattleInvitationWasCancelled(invitationId);
         if (block.timestamp >= invitation.expiresAt) revert BattleInvitationExpired(invitationId, invitation.expiresAt);
@@ -338,8 +370,7 @@ contract BattleFactory is AccessControl, IBattleFactory {
             if (owner != msg.sender) revert BattleTokenNotEscrowed(tokenId, msg.sender, owner);
             uint8 activityId = binderData.getUnitState(tokenId).activity.activityId;
             if (activityId != BinderIds.ACTIVITY_BATTLE) revert BattleActivityMismatch(tokenId, activityId);
-            binderData.clearBattleProxy(tokenId, msg.sender);
-            binderData.endActivity(tokenId);
+            binderData.endBattleActivity(tokenId, msg.sender);
             emit BattleActivityEnded(msg.sender, tokenId);
         }
     }

@@ -87,7 +87,9 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         uint16 mapVersion,
         uint256 participantCount
     );
-    event ActionDeclared(uint32 indexed actionNumber, uint256 indexed actorTokenId, uint8 actionTypeId, uint32 referenceId);
+    event ActionDeclared(
+        uint32 indexed actionNumber, uint256 indexed actorTokenId, uint8 actionTypeId, uint32 referenceId
+    );
     event ArtUsed(
         uint32 indexed actionNumber,
         uint256 indexed actorTokenId,
@@ -133,7 +135,8 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
                 || params.binderSkillsAddress.code.length == 0 || params.book0fArtsAddress.code.length == 0
                 || params.book0fRealmsAddress.code.length == 0 || params.tokenIds.length < 2
                 || params.tokenIds.length > BinderIds.MAX_BATTLE_PARTICIPANTS
-                || params.tokenIds.length != params.spawnTileIds.length || params.tokenIds.length != params.selectedArtIds.length
+                || params.tokenIds.length != params.spawnTileIds.length
+                || params.tokenIds.length != params.selectedArtIds.length
         ) revert InvalidBattleInput();
 
         factory = params.factoryAddress;
@@ -144,14 +147,18 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         mapId = params.requestedMapId;
         mapVersion = params.requestedMapVersion;
 
-        binderStructs.MapDefinition memory map = book0fRealms.getMapAtVersion(params.requestedMapId, params.requestedMapVersion);
+        binderStructs.MapDefinition memory map =
+            book0fRealms.getMapAtVersion(params.requestedMapId, params.requestedMapVersion);
         if (!map.enabled) revert InvalidBattleInput();
         mapWidth = map.width;
         mapHeight = map.height;
 
         for (uint256 index; index < params.tokenIds.length; ++index) {
             _initializeUnit(
-                params.tokenIds[index], params.spawnTileIds[index], params.selectedArtIds[index], uint16(map.width * map.height)
+                params.tokenIds[index],
+                params.spawnTileIds[index],
+                params.selectedArtIds[index],
+                uint16(map.width * map.height)
             );
         }
         isActive = true;
@@ -167,7 +174,9 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         if (offset >= count || limit == 0) return new uint256[](0);
         uint256 pageLength = limit < count - offset ? limit : count - offset;
         uint256[] memory page = new uint256[](pageLength);
-        for (uint256 index; index < pageLength; ++index) page[index] = _participantIds[offset + index];
+        for (uint256 index; index < pageLength; ++index) {
+            page[index] = _participantIds[offset + index];
+        }
         return page;
     }
 
@@ -187,7 +196,12 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         });
     }
 
-    function getCurrentVitals(uint256 tokenId) external view override returns (uint16 currentHP, uint16 currentMP, bool alive) {
+    function getCurrentVitals(uint256 tokenId)
+        external
+        view
+        override
+        returns (uint16 currentHP, uint16 currentMP, bool alive)
+    {
         BattleUnit storage unit = _requireParticipant(tokenId);
         return (unit.currentHP, unit.currentMP, unit.alive);
     }
@@ -232,11 +246,17 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         // Mark the defeat before effects so the unit cannot take a second action,
         // but deliberately do not settle until this complete declaration resolves.
         if (actor.currentHP == 0) actor.alive = false;
-        int256 formulaResult = ArtFormulaLib.evaluate(art.primaryFormula, _asEffectiveStats(actor), _asEffectiveStats(target));
+        int256 formulaResult =
+            ArtFormulaLib.evaluate(art.primaryFormula, _asEffectiveStats(actor), _asEffectiveStats(target));
         uint16 actorHPAfterCost = actor.currentHP;
         uint16 actorMPAfterCost = actor.currentMP;
         uint16 targetHPBefore = target.currentHP;
-        int256 hpDelta = _applyEffect(art.effectTypeId, target, formulaResult);
+        _applyEffect(art.effectTypeId, target, formulaResult);
+        // A completed self-targeted Heal must not revive a caster that was
+        // defeated by this declaration's HP cost. This preserves the terminal
+        // invariant used by settlement: !alive always means zero HP.
+        if (!actor.alive && actor.currentHP != 0) actor.currentHP = 0;
+        int256 hpDelta = int256(uint256(target.currentHP)) - int256(uint256(targetHPBefore));
         if (actorHPAfterCost != _units[actorTokenId].currentHP || actorMPAfterCost != _units[actorTokenId].currentMP) {
             // Kept for clarity if a future effect mutates the actor after costs.
             _markDirty(actorTokenId);
@@ -356,12 +376,19 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         emit BattleCancelled(msg.sender, _participantIds.length);
     }
 
-    function onERC721Received(address operator, address, uint256, bytes calldata) external view override returns (bytes4) {
+    function onERC721Received(address operator, address, uint256, bytes calldata)
+        external
+        view
+        override
+        returns (bytes4)
+    {
         if (msg.sender != address(binderData) || operator != factory) revert UnexpectedERC721(msg.sender, operator);
         return IERC721Receiver.onERC721Received.selector;
     }
 
-    function _initializeUnit(uint256 tokenId, uint16 spawnTileId, uint32[] calldata loadout, uint16 tileCount) internal {
+    function _initializeUnit(uint256 tokenId, uint16 spawnTileId, uint32[] calldata loadout, uint16 tileCount)
+        internal
+    {
         if (_units[tokenId].controller != address(0)) revert DuplicateBattleToken(tokenId);
         if (loadout.length > BinderIds.MAX_BATTLE_LOADOUT_ARTS) revert InvalidBattleInput();
         for (uint256 index; index < _participantIds.length; ++index) {
@@ -421,10 +448,7 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         if (distance > art.range) revert TargetOutOfRange(actorTokenId, targetTokenId, distance, art.range);
     }
 
-    function _applyEffect(uint8 effectTypeId, BattleUnit storage target, int256 formulaResult)
-        internal
-        returns (int256 hpDelta)
-    {
+    function _applyEffect(uint8 effectTypeId, BattleUnit storage target, int256 formulaResult) internal {
         uint16 beforeHP = target.currentHP;
         if (effectTypeId == BinderIds.EFFECT_TYPE_DAMAGE) {
             uint16 damage = ArtFormulaLib.clampDamage(formulaResult, beforeHP);
@@ -435,11 +459,12 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         } else {
             revert UnsupportedBattleEffect(effectTypeId);
         }
-        hpDelta = int256(uint256(target.currentHP)) - int256(uint256(beforeHP));
     }
 
     function _asEffectiveStats(BattleUnit storage unit) internal view returns (uint256[8] memory stats) {
-        for (uint256 index; index < stats.length; ++index) stats[index] = unit.baseStats[index];
+        for (uint256 index; index < stats.length; ++index) {
+            stats[index] = unit.baseStats[index];
+        }
     }
 
     function _markDirty(uint256 tokenId) internal {
@@ -470,6 +495,8 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
     }
 
     function _emitBattleInitialized() internal {
-        emit BattleInitialized(factory, address(book0fArts), address(book0fRealms), mapId, mapVersion, _participantIds.length);
+        emit BattleInitialized(
+            factory, address(book0fArts), address(book0fRealms), mapId, mapVersion, _participantIds.length
+        );
     }
 }

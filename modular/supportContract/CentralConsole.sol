@@ -8,6 +8,10 @@ import "../interfaces/ICentralConsole.sol";
 import "../interfaces/IBinderMetadata.sol";
 import "../interfaces/IBinderSkills.sol";
 import "../interfaces/IBinderData.sol";
+import "../interfaces/IBook0fLife.sol";
+import "../interfaces/IFusionMinter.sol";
+import "../interfaces/IBinderLogic.sol";
+import "../interfaces/IScaleOfBalance.sol";
 
 /// @notice Canonical Binders module registry and configuration control plane.
 /// @dev It deliberately has no arbitrary call primitive and owns no NFT, Book,
@@ -31,10 +35,7 @@ contract CentralConsole is AccessControl, ICentralConsole {
 
     event CanonicalModuleUpdated(bytes32 indexed moduleId, address indexed previousModule, address indexed newModule);
     event BattleFactoryVersionUpdated(
-        address indexed previousFactory,
-        address indexed newFactory,
-        uint32 previousVersion,
-        uint32 newVersion
+        address indexed previousFactory, address indexed newFactory, uint32 previousVersion, uint32 newVersion
     );
     event ActivityModuleUpdated(uint8 indexed activityId, address indexed previousModule, address indexed newModule);
 
@@ -50,7 +51,39 @@ contract CentralConsole is AccessControl, ICentralConsole {
     }
 
     function setBinderSkills(address moduleAddress) external override onlyRole(CONFIG_ROLE) {
-        _setBinderSkills(moduleAddress);
+        _configureBinderSkills(moduleAddress);
+    }
+
+    /// @notice Atomically rotates the canonical Skills proxy, its narrow
+    /// metadata-refresh permission, and (when necessary) its Console binding.
+    /// @dev A replacement Console must have been granted the Skills admin role
+    /// before it can complete a Console migration in one transaction.
+    function configureBinderSkills(address moduleAddress) public onlyRole(CONFIG_ROLE) {
+        _configureBinderSkills(moduleAddress);
+    }
+
+    function _configureBinderSkills(address moduleAddress) internal {
+        _requireContract(BinderIds.MODULE_BINDER_SKILLS, moduleAddress);
+        address skillsBinderData;
+        try IBinderSkills(moduleAddress).binderData() returns (address resolvedBinderData) {
+            skillsBinderData = resolvedBinderData;
+        } catch {
+            revert CanonicalPairMismatch(binderData, address(0));
+        }
+        if (skillsBinderData != binderData) revert CanonicalPairMismatch(binderData, skillsBinderData);
+
+        address previousModule = binderSkills;
+        // The registry is staged first solely so BinderSkills can verify the
+        // new pairing in setCentralConsole. Any failure reverts this whole tx.
+        binderSkills = moduleAddress;
+        if (IBinderSkills(moduleAddress).centralConsole() != address(this)) {
+            IBinderSkills(moduleAddress).setCentralConsole(address(this));
+        }
+        if (IBinderSkills(moduleAddress).centralConsole() != address(this)) {
+            revert CanonicalSkillsMismatch(address(this), IBinderSkills(moduleAddress).centralConsole());
+        }
+        IBinderData(binderData).setMetadataRefreshModule(previousModule, moduleAddress);
+        emit CanonicalModuleUpdated(BinderIds.MODULE_BINDER_SKILLS, previousModule, moduleAddress);
     }
 
     function setBinderMetadata(address moduleAddress) external override onlyRole(CONFIG_ROLE) {
@@ -61,13 +94,13 @@ contract CentralConsole is AccessControl, ICentralConsole {
             revert CanonicalPairMismatch(binderData, address(0));
         }
         if (metadataBinderData != binderData) revert CanonicalPairMismatch(binderData, metadataBinderData);
-        _setModule(BinderIds.MODULE_BINDER_METADATA, binderMetadata, moduleAddress);
-        binderMetadata = moduleAddress;
+        configureBinderMetadata(moduleAddress);
     }
 
     /// @notice Atomically validates the renderer, updates BinderData's tokenURI
     /// target, records the canonical module, and verifies the final pointer.
     function configureBinderMetadata(address moduleAddress) public onlyRole(CONFIG_ROLE) {
+        _requireContract(BinderIds.MODULE_BINDER_METADATA, moduleAddress);
         address metadataBinderData;
         try IBinderMetadata(moduleAddress).binderData() returns (address resolvedBinderData) {
             metadataBinderData = resolvedBinderData;
@@ -90,13 +123,86 @@ contract CentralConsole is AccessControl, ICentralConsole {
     }
 
     function setBook0fLife(address moduleAddress) external override onlyRole(CONFIG_ROLE) {
+        _requireContract(BinderIds.MODULE_BOOK_OF_LIFE, moduleAddress);
+        if (binderMetadata != address(0) && IBinderMetadata(binderMetadata).book0fLife() != moduleAddress) {
+            revert CanonicalPairMismatch(moduleAddress, IBinderMetadata(binderMetadata).book0fLife());
+        }
+        if (fusionMinter != address(0) && IFusionMinter(fusionMinter).book0fLife() != moduleAddress) {
+            revert CanonicalPairMismatch(moduleAddress, IFusionMinter(fusionMinter).book0fLife());
+        }
+        if (scaleOfBalance != address(0)) IScaleOfBalance(scaleOfBalance).setBook0fLife(moduleAddress);
+        if (binderLogic != address(0)) IBinderLogic(binderLogic).setBook0fLife(moduleAddress);
+        if (allegianceRegistry != address(0)) IBook0fLife(moduleAddress).setAllegianceRegistry(allegianceRegistry);
         _setModule(BinderIds.MODULE_BOOK_OF_LIFE, book0fLife, moduleAddress);
         book0fLife = moduleAddress;
     }
 
     function setBook0fArts(address moduleAddress) external override onlyRole(CONFIG_ROLE) {
+        _requireContract(BinderIds.MODULE_BOOK_OF_ARTS, moduleAddress);
+        if (binderMetadata != address(0) && IBinderMetadata(binderMetadata).book0fArts() != moduleAddress) {
+            revert CanonicalPairMismatch(moduleAddress, IBinderMetadata(binderMetadata).book0fArts());
+        }
         _setModule(BinderIds.MODULE_BOOK_OF_ARTS, book0fArts, moduleAddress);
         book0fArts = moduleAddress;
+    }
+
+    /// @notice Cuts over Book0fLife together with fresh compatible renderer
+    /// and Fusion consumer instances. Existing Fusion minters remain
+    /// authorized only to complete the requests they already custody.
+    function configureBook0fLife(address newBook, address compatibleMetadata, address compatibleFusion)
+        external
+        onlyRole(CONFIG_ROLE)
+    {
+        _requireContract(BinderIds.MODULE_BOOK_OF_LIFE, newBook);
+        _requireMetadataDependencies(compatibleMetadata, newBook, book0fArts);
+        _requireContract(BinderIds.MODULE_FUSION_MINTER, compatibleFusion);
+        if (IFusionMinter(compatibleFusion).binderData() != binderData) {
+            revert CanonicalPairMismatch(binderData, IFusionMinter(compatibleFusion).binderData());
+        }
+        if (IFusionMinter(compatibleFusion).book0fLife() != newBook) {
+            revert CanonicalPairMismatch(newBook, IFusionMinter(compatibleFusion).book0fLife());
+        }
+
+        IBook0fLife(newBook).setFusionMinter(compatibleFusion);
+        if (scaleOfBalance != address(0)) IScaleOfBalance(scaleOfBalance).setBook0fLife(newBook);
+        if (binderLogic != address(0)) IBinderLogic(binderLogic).setBook0fLife(newBook);
+        if (allegianceRegistry != address(0)) IBook0fLife(newBook).setAllegianceRegistry(allegianceRegistry);
+        IBinderData(binderData).setAuthorizedFusionMinter(compatibleFusion, true);
+        IBinderData(binderData).setActivityController(BinderIds.ACTIVITY_FUSION, compatibleFusion);
+        IBinderData(binderData).setBinderMetadata(compatibleMetadata);
+
+        address oldBook = book0fLife;
+        address oldMetadata = binderMetadata;
+        address oldFusion = fusionMinter;
+        book0fLife = newBook;
+        binderMetadata = compatibleMetadata;
+        fusionMinter = compatibleFusion;
+        emit CanonicalModuleUpdated(BinderIds.MODULE_BOOK_OF_LIFE, oldBook, newBook);
+        emit CanonicalModuleUpdated(BinderIds.MODULE_BINDER_METADATA, oldMetadata, compatibleMetadata);
+        emit CanonicalModuleUpdated(BinderIds.MODULE_FUSION_MINTER, oldFusion, compatibleFusion);
+
+        if (
+            IBinderData(binderData).binderMetadataAddress() != compatibleMetadata
+                || IBinderData(binderData).getActivityController(BinderIds.ACTIVITY_FUSION) != compatibleFusion
+        ) revert CanonicalPairMismatch(compatibleMetadata, IBinderData(binderData).binderMetadataAddress());
+    }
+
+    /// @notice Cuts over Book0fArts and its immutable renderer dependency in
+    /// the same transaction, so the registry never advertises a mismatched UI.
+    function configureBook0fArts(address newBook, address compatibleMetadata) external onlyRole(CONFIG_ROLE) {
+        _requireContract(BinderIds.MODULE_BOOK_OF_ARTS, newBook);
+        _requireMetadataDependencies(compatibleMetadata, book0fLife, newBook);
+        IBinderData(binderData).setBinderMetadata(compatibleMetadata);
+
+        address oldBook = book0fArts;
+        address oldMetadata = binderMetadata;
+        book0fArts = newBook;
+        binderMetadata = compatibleMetadata;
+        emit CanonicalModuleUpdated(BinderIds.MODULE_BOOK_OF_ARTS, oldBook, newBook);
+        emit CanonicalModuleUpdated(BinderIds.MODULE_BINDER_METADATA, oldMetadata, compatibleMetadata);
+        if (IBinderData(binderData).binderMetadataAddress() != compatibleMetadata) {
+            revert CanonicalPairMismatch(compatibleMetadata, IBinderData(binderData).binderMetadataAddress());
+        }
     }
 
     function setBook0fRealms(address moduleAddress) external override onlyRole(CONFIG_ROLE) {
@@ -105,21 +211,66 @@ contract CentralConsole is AccessControl, ICentralConsole {
     }
 
     function setBinderLogic(address moduleAddress) external override onlyRole(CONFIG_ROLE) {
+        _requireContract(BinderIds.MODULE_BINDER_LOGIC, moduleAddress);
+        if (IBinderLogic(moduleAddress).binderData() != binderData) {
+            revert CanonicalPairMismatch(binderData, IBinderLogic(moduleAddress).binderData());
+        }
+        if (book0fLife != address(0) && IBinderLogic(moduleAddress).book0fLife() != book0fLife) {
+            revert CanonicalPairMismatch(book0fLife, IBinderLogic(moduleAddress).book0fLife());
+        }
+        if (allegianceRegistry != address(0)) IBinderLogic(moduleAddress).setAllegianceRegistry(allegianceRegistry);
+        IBinderData(binderData).setAuthorizedBinderLogic(moduleAddress, true);
         _setModule(BinderIds.MODULE_BINDER_LOGIC, binderLogic, moduleAddress);
         binderLogic = moduleAddress;
+        if (!IBinderData(binderData).authorizedBinderLogic(moduleAddress)) {
+            revert CanonicalPairMismatch(moduleAddress, address(0));
+        }
     }
 
     function setFusionMinter(address moduleAddress) external override onlyRole(CONFIG_ROLE) {
+        _requireContract(BinderIds.MODULE_FUSION_MINTER, moduleAddress);
+        address minterBinderData;
+        try IFusionMinter(moduleAddress).binderData() returns (address resolvedBinderData) {
+            minterBinderData = resolvedBinderData;
+        } catch {
+            revert CanonicalPairMismatch(binderData, address(0));
+        }
+        if (minterBinderData != binderData) revert CanonicalPairMismatch(binderData, minterBinderData);
+        if (book0fLife == address(0) || IFusionMinter(moduleAddress).book0fLife() != book0fLife) {
+            revert CanonicalPairMismatch(book0fLife, IFusionMinter(moduleAddress).book0fLife());
+        }
+        IBinderData(binderData).setAuthorizedFusionMinter(moduleAddress, true);
+        IBinderData(binderData).setActivityController(BinderIds.ACTIVITY_FUSION, moduleAddress);
+        IBook0fLife(book0fLife).setFusionMinter(moduleAddress);
         _setModule(BinderIds.MODULE_FUSION_MINTER, fusionMinter, moduleAddress);
         fusionMinter = moduleAddress;
+        if (
+            !IBinderData(binderData).authorizedFusionMinter(moduleAddress)
+                || IBinderData(binderData).getActivityController(BinderIds.ACTIVITY_FUSION) != moduleAddress
+        ) {
+            revert CanonicalPairMismatch(
+                moduleAddress, IBinderData(binderData).getActivityController(BinderIds.ACTIVITY_FUSION)
+            );
+        }
     }
 
     function setScaleOfBalance(address moduleAddress) external override onlyRole(CONFIG_ROLE) {
+        _requireContract(BinderIds.MODULE_SCALE_OF_BALANCE, moduleAddress);
+        if (IScaleOfBalance(moduleAddress).binderData() != binderData) {
+            revert CanonicalPairMismatch(binderData, IScaleOfBalance(moduleAddress).binderData());
+        }
+        if (book0fLife != address(0) && IScaleOfBalance(moduleAddress).book0fLife() != book0fLife) {
+            revert CanonicalPairMismatch(book0fLife, IScaleOfBalance(moduleAddress).book0fLife());
+        }
         _setModule(BinderIds.MODULE_SCALE_OF_BALANCE, scaleOfBalance, moduleAddress);
         scaleOfBalance = moduleAddress;
     }
 
-    function setBattleFactory(address moduleAddress, uint32 implementationVersion) external override onlyRole(CONFIG_ROLE) {
+    function setBattleFactory(address moduleAddress, uint32 implementationVersion)
+        external
+        override
+        onlyRole(CONFIG_ROLE)
+    {
         _requireContract(BinderIds.MODULE_BATTLE_FACTORY, moduleAddress);
         uint32 previousVersion = battleFactoryVersion;
         if (implementationVersion == 0 || implementationVersion <= previousVersion) {
@@ -127,25 +278,37 @@ contract CentralConsole is AccessControl, ICentralConsole {
         }
 
         address previousFactory = battleFactory;
+        IBinderData(binderData).setAuthorizedBattleFactory(moduleAddress, true);
+        IBinderData(binderData).setActivityController(BinderIds.ACTIVITY_BATTLE, moduleAddress);
         battleFactory = moduleAddress;
         battleFactoryVersion = implementationVersion;
         emit CanonicalModuleUpdated(BinderIds.MODULE_BATTLE_FACTORY, previousFactory, moduleAddress);
         emit BattleFactoryVersionUpdated(previousFactory, moduleAddress, previousVersion, implementationVersion);
+        if (
+            !IBinderData(binderData).authorizedBattleFactory(moduleAddress)
+                || IBinderData(binderData).getActivityController(BinderIds.ACTIVITY_BATTLE) != moduleAddress
+        ) {
+            revert CanonicalPairMismatch(
+                moduleAddress, IBinderData(binderData).getActivityController(BinderIds.ACTIVITY_BATTLE)
+            );
+        }
     }
 
     function setAllegianceRegistry(address moduleAddress) external override onlyRole(CONFIG_ROLE) {
+        _requireContract(BinderIds.MODULE_ALLEGIANCE_REGISTRY, moduleAddress);
+        if (book0fLife != address(0)) IBook0fLife(book0fLife).setAllegianceRegistry(moduleAddress);
+        if (binderLogic != address(0)) IBinderLogic(binderLogic).setAllegianceRegistry(moduleAddress);
         _setModule(BinderIds.MODULE_ALLEGIANCE_REGISTRY, allegianceRegistry, moduleAddress);
         allegianceRegistry = moduleAddress;
     }
 
-    /// @notice Registers the canonical module for a future activity type.
-    /// @dev This registry does not replace BinderData's controller authorization;
-    /// runtime activity wiring remains an explicit, narrow later operation.
+    /// @notice Registers and activates the canonical controller for a future activity type.
     function setActivityModule(uint8 activityId, address moduleAddress) external override onlyRole(CONFIG_ROLE) {
         if (activityId == BinderIds.ACTIVITY_IDLE) revert InvalidActivityModuleId(activityId);
         _requireContract(bytes32(uint256(activityId)), moduleAddress);
 
         address previousModule = activityModule[activityId];
+        IBinderData(binderData).setActivityController(activityId, moduleAddress);
         activityModule[activityId] = moduleAddress;
         emit ActivityModuleUpdated(activityId, previousModule, moduleAddress);
     }
@@ -175,21 +338,49 @@ contract CentralConsole is AccessControl, ICentralConsole {
             );
     }
 
-    function _setBinderSkills(address moduleAddress) internal {
-        _setModule(BinderIds.MODULE_BINDER_SKILLS, binderSkills, moduleAddress);
-        address skillsBinderData;
-        try IBinderSkills(moduleAddress).binderData() returns (address resolvedBinderData) {
-            skillsBinderData = resolvedBinderData;
-        } catch {
-            revert CanonicalPairMismatch(binderData, address(0));
-        }
-        if (skillsBinderData != binderData) revert CanonicalPairMismatch(binderData, skillsBinderData);
-        binderSkills = moduleAddress;
+    function getWiringStatus() external view override returns (WiringStatus memory status) {
+        status.binderDataMetadataMatch =
+            binderMetadata != address(0) && IBinderData(binderData).binderMetadataAddress() == binderMetadata;
+        status.binderSkillsPairMatch = binderSkills != address(0)
+            && IBinderSkills(binderSkills).binderData() == binderData
+            && IBinderSkills(binderSkills).centralConsole() == address(this);
+        status.metadataDependenciesMatch = binderMetadata != address(0)
+            && IBinderMetadata(binderMetadata).binderData() == binderData
+            && IBinderMetadata(binderMetadata).binderSkills() == binderSkills
+            && IBinderMetadata(binderMetadata).book0fLife() == book0fLife
+            && IBinderMetadata(binderMetadata).book0fArts() == book0fArts;
+        status.bookLifeDependenciesMatch = book0fLife != address(0)
+            && (fusionMinter == address(0) || IFusionMinter(fusionMinter).book0fLife() == book0fLife)
+            && (scaleOfBalance == address(0) || IScaleOfBalance(scaleOfBalance).book0fLife() == book0fLife)
+            && (binderLogic == address(0) || IBinderLogic(binderLogic).book0fLife() == book0fLife);
+        status.battleFactoryMatch =
+            battleFactory != address(0) && IBinderData(binderData).authorizedBattleFactory(battleFactory);
+        status.battleActivityControllerMatch = battleFactory != address(0)
+            && IBinderData(binderData).getActivityController(BinderIds.ACTIVITY_BATTLE) == battleFactory;
+        status.fusionActivityControllerMatch = fusionMinter != address(0)
+            && IBinderData(binderData).authorizedFusionMinter(fusionMinter)
+            && IBinderData(binderData).getActivityController(BinderIds.ACTIVITY_FUSION) == fusionMinter;
+        status.allegianceDependenciesMatch = allegianceRegistry != address(0)
+            && (book0fLife == address(0) || IBook0fLife(book0fLife).allegianceRegistry() == allegianceRegistry)
+            && (binderLogic == address(0) || IBinderLogic(binderLogic).allegianceRegistry() == allegianceRegistry);
     }
 
     function _setModule(bytes32 moduleId, address previousModule, address newModule) internal {
         _requireContract(moduleId, newModule);
         emit CanonicalModuleUpdated(moduleId, previousModule, newModule);
+    }
+
+    function _requireMetadataDependencies(address moduleAddress, address expectedBookLife, address expectedBookArts)
+        internal
+        view
+    {
+        _requireContract(BinderIds.MODULE_BINDER_METADATA, moduleAddress);
+        if (
+            IBinderMetadata(moduleAddress).binderData() != binderData
+                || IBinderMetadata(moduleAddress).binderSkills() != binderSkills
+                || IBinderMetadata(moduleAddress).book0fLife() != expectedBookLife
+                || IBinderMetadata(moduleAddress).book0fArts() != expectedBookArts
+        ) revert CanonicalPairMismatch(binderData, IBinderMetadata(moduleAddress).binderData());
     }
 
     function _requireContract(bytes32 moduleId, address moduleAddress) internal view {
