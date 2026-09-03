@@ -6,8 +6,13 @@ import "../supportContract/binderStructs.sol";
 /// @notice Cross-module API for current Book0fLife definitions and configuration.
 interface IBook0fLife {
     function allegianceRegistry() external view returns (address);
+    function currentFusionMinter() external view returns (address);
     function setAllegianceRegistry(address registry) external;
     function setFusionMinter(address fusionMinter) external;
+    function revokeFusionMinter(address fusionMinter) external;
+    function setScaleOfBalanceAuthority(address previousScale, address newScale) external;
+    function CONFIG_ROLE() external view returns (bytes32);
+    function hasRole(bytes32 role, address account) external view returns (bool);
     function registerRarity(uint8 rarityId, string calldata displayName) external;
     function setRarityName(uint8 rarityId, string calldata displayName) external;
     function addNewClass(

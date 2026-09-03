@@ -55,6 +55,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     error ActiveBattleBinding(uint256 tokenId, address battleProxy);
     error ActiveFusionBinding(uint256 tokenId, address fusionMinter);
     error UnauthorizedFusionMinter(address minter);
+    error UnauthorizedBinderLogic(address logic);
     error FusionMinterHasActiveEscrows(address minter, uint256 activeCount);
     error TokenNotEscrowedForFusion(uint256 tokenId, address expectedMinter, address actualOwner);
     error InvalidPermanentMetadata(uint256 classId, uint8 rarityId, uint16 configVersion);
@@ -337,6 +338,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         } else if (activeFusionCountByMinter[minter] != 0) {
             revert FusionMinterHasActiveEscrows(minter, activeFusionCountByMinter[minter]);
         }
+        if (!authorized) _revokeRole(FUSION_ROLE, minter);
         authorizedFusionMinter[minter] = authorized;
         emit FusionMinterAuthorizationUpdated(minter, authorized);
     }
@@ -346,8 +348,16 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     /// authorized until an explicit post-pending-request retirement.
     function setAuthorizedBinderLogic(address logic, bool authorized) external onlyRole(CONFIG_ROLE) {
         if (authorized && logic.code.length == 0) revert InvalidBattleFactory(logic);
+        if (!authorized) _revokeRole(MINTER_ROLE, logic);
         authorizedBinderLogic[logic] = authorized;
         emit BinderLogicAuthorizationUpdated(logic, authorized);
+    }
+
+    /// @notice Moves the narrow configuration authority used by the canonical
+    /// ScaleOfBalance without changing its owner/admin hierarchy.
+    function setScaleOfBalanceAuthority(address previousScale, address newScale) external onlyRole(CONFIG_ROLE) {
+        _grantRole(CONFIG_ROLE, newScale);
+        if (previousScale != newScale) _revokeRole(CONFIG_ROLE, previousScale);
     }
 
     /// @notice Enables the canonical Factory gateway to bind a just-escrowed NFT to a recognized clone.
@@ -646,15 +656,11 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     }
 
     function _requireFusionAuthority(address minter) internal view {
-        if (!authorizedFusionMinter[minter] && !hasRole(FUSION_ROLE, minter)) {
-            _checkRole(FUSION_ROLE, minter);
-        }
+        if (!authorizedFusionMinter[minter]) revert UnauthorizedFusionMinter(minter);
     }
 
     function _requireMinterAuthority(address logic) internal view {
-        if (!authorizedBinderLogic[logic] && !hasRole(MINTER_ROLE, logic)) {
-            _checkRole(MINTER_ROLE, logic);
-        }
+        if (!authorizedBinderLogic[logic]) revert UnauthorizedBinderLogic(logic);
     }
 
     function _requireBattleBinding(uint256 tokenId, address battleProxy, address factory) internal view {

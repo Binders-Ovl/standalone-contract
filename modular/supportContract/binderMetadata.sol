@@ -94,7 +94,11 @@ contract BinderMetadata is Ownable {
         return _buildUnitDetails(tokenId);
     }
 
-    function getMoveSets(uint256 tokenId) external view returns (uint32[3] memory moveSets, string[3] memory moveSetNames) {
+    function getMoveSets(uint256 tokenId)
+        external
+        view
+        returns (uint32[3] memory moveSets, string[3] memory moveSetNames)
+    {
         moveSets = binderSkills.getMoveSets(tokenId);
         for (uint256 i; i < moveSets.length; ++i) {
             moveSetNames[i] = _artName(moveSets[i]);
@@ -131,7 +135,9 @@ contract BinderMetadata is Ownable {
         binderStructs.UnitStateView memory state = binderData.getUnitState(tokenId);
         uint32[3] memory moveSets = binderSkills.getMoveSets(tokenId);
         string[3] memory moveSetNames;
-        for (uint256 i; i < moveSets.length; ++i) moveSetNames[i] = _artName(moveSets[i]);
+        for (uint256 i; i < moveSets.length; ++i) {
+            moveSetNames[i] = _artName(moveSets[i]);
+        }
 
         details = UnitDetailsView({
             name: meta.name,
@@ -155,12 +161,15 @@ contract BinderMetadata is Ownable {
 
     function _skillPage(uint32[] memory artIds) internal view returns (SkillDetailsPage memory page) {
         string[] memory artNames = new string[](artIds.length);
-        for (uint256 i; i < artIds.length; ++i) artNames[i] = _artName(artIds[i]);
+        for (uint256 i; i < artIds.length; ++i) {
+            artNames[i] = _artName(artIds[i]);
+        }
         page = SkillDetailsPage({artIds: artIds, artNames: artNames});
     }
 
     function _buildJson(UnitDetailsView memory details) internal view returns (string memory) {
-        string memory image = string(abi.encodePacked(binderData.baseImageURI(), Strings.toString(details.classId), ".gif"));
+        string memory image =
+            string(abi.encodePacked(binderData.baseImageURI(), Strings.toString(details.classId), ".gif"));
         return string(
             abi.encodePacked(
                 '{"name":"',
@@ -188,37 +197,68 @@ contract BinderMetadata is Ownable {
         );
         string memory staticAttributes = string(
             abi.encodePacked(
-                _numberAttribute("STR", stats.stats[0]), ",", _numberAttribute("INT", stats.stats[1]), ",",
-                _numberAttribute("AGI", stats.stats[2]), ",", _numberAttribute("DEX", stats.stats[3]), ",",
-                _numberAttribute("VIT", stats.stats[4]), ",", _numberAttribute("WIS", stats.stats[5]), ",",
-                _numberAttribute("SPD", stats.stats[6]), ",", _numberAttribute("STA", stats.stats[7])
+                _numberAttribute("STR", stats.stats[0]),
+                ",",
+                _numberAttribute("INT", stats.stats[1]),
+                ",",
+                _numberAttribute("AGI", stats.stats[2]),
+                ",",
+                _numberAttribute("DEX", stats.stats[3]),
+                ",",
+                _numberAttribute("VIT", stats.stats[4]),
+                ",",
+                _numberAttribute("WIS", stats.stats[5]),
+                ",",
+                _numberAttribute("SPD", stats.stats[6]),
+                ",",
+                _numberAttribute("STA", stats.stats[7])
             )
         );
         string memory dynamicAttributes = string(
             abi.encodePacked(
-                _numberAttribute("MaxHP", dynamicStats.maxHP), ",", _numberAttribute("CurrentHP", dynamicStats.currentHP),
-                ",", _numberAttribute("MaxMP", dynamicStats.maxMP), ",",
+                _numberAttribute("MaxHP", dynamicStats.maxHP),
+                ",",
+                _numberAttribute("CurrentHP", dynamicStats.currentHP),
+                ",",
+                _numberAttribute("MaxMP", dynamicStats.maxMP),
+                ",",
                 _numberAttribute("CurrentMP", dynamicStats.currentMP)
             )
         );
         string memory stateAttributes = string(
             abi.encodePacked(
-                _stringAttribute("Ready To Arm", _boolName(details.readyToArm)), ",",
-                _stringAttribute("Activity", details.activityName), ",",
+                _stringAttribute("Ready To Arm", _boolName(details.readyToArm)),
+                ",",
+                _stringAttribute("Activity", details.activityName),
+                ",",
                 _stringAttribute("Transfer Status", details.transferable ? "Transferable" : "Locked")
             )
         );
         string memory skillAttributes = string(
             abi.encodePacked(
-                _stringAttribute("Move Set 1", details.moveSetNames[0]), ",",
-                _stringAttribute("Move Set 2", details.moveSetNames[1]), ",",
-                _stringAttribute("Move Set 3", details.moveSetNames[2]), ",",
-                _numberAttribute("Active Skill Count", details.activeSkillCount), ",",
+                _stringAttribute("Move Set 1", details.moveSetNames[0]),
+                ",",
+                _stringAttribute("Move Set 2", details.moveSetNames[1]),
+                ",",
+                _stringAttribute("Move Set 3", details.moveSetNames[2]),
+                ",",
+                _numberAttribute("Active Skill Count", details.activeSkillCount),
+                ",",
                 _numberAttribute("Passive Skill Count", details.passiveSkillCount)
             )
         );
         return string(
-            abi.encodePacked(coreAttributes, ",", staticAttributes, ",", dynamicAttributes, ",", stateAttributes, ",", skillAttributes)
+            abi.encodePacked(
+                coreAttributes,
+                ",",
+                staticAttributes,
+                ",",
+                dynamicAttributes,
+                ",",
+                stateAttributes,
+                ",",
+                skillAttributes
+            )
         );
     }
 
@@ -234,7 +274,8 @@ contract BinderMetadata is Ownable {
     }
 
     function _stringAttribute(string memory traitType, string memory value) internal pure returns (string memory) {
-        return string(abi.encodePacked('{"trait_type":"', _escapeJson(traitType), '","value":"', _escapeJson(value), '"}'));
+        return
+            string(abi.encodePacked('{"trait_type":"', _escapeJson(traitType), '","value":"', _escapeJson(value), '"}'));
     }
 
     function _numberAttribute(string memory traitType, uint256 value) internal pure returns (string memory) {

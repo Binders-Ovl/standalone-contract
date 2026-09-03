@@ -13,11 +13,11 @@ library ArtFormulaLib {
 
     /// @notice Resolves flat value plus each configured actor/target stat term.
     /// @dev Division truncates toward zero, matching Solidity signed division.
-    function evaluate(
-        binderStructs.Formula memory formula,
-        uint256[8] memory actorStats,
-        uint256[8] memory targetStats
-    ) internal pure returns (int256 result) {
+    function evaluate(binderStructs.Formula memory formula, uint256[8] memory actorStats, uint256[8] memory targetStats)
+        internal
+        pure
+        returns (int256 result)
+    {
         if (formula.termCount > BinderIds.MAX_FORMULA_TERMS) revert InvalidFormulaTermCount(formula.termCount);
         result = int256(formula.flatValue);
 
@@ -63,7 +63,11 @@ library ArtFormulaLib {
     /// @notice Returns whether an Art's explicit HP and MP costs are affordable.
     /// @dev Whether an action may spend its last HP is a BattleProxy ruleset
     /// decision; this helper deliberately implements only the stated costs.
-    function canPayCosts(uint16 currentHP, uint16 currentMP, uint16 hpCost, uint16 mpCost) internal pure returns (bool) {
+    function canPayCosts(uint16 currentHP, uint16 currentMP, uint16 hpCost, uint16 mpCost)
+        internal
+        pure
+        returns (bool)
+    {
         return currentHP >= hpCost && currentMP >= mpCost;
     }
 

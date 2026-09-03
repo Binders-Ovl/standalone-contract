@@ -63,6 +63,9 @@ interface IBinderData is IERC721 {
     function setAuthorizedBattleFactory(address factory, bool authorized) external;
     function setAuthorizedFusionMinter(address minter, bool authorized) external;
     function setAuthorizedBinderLogic(address logic, bool authorized) external;
+    function setScaleOfBalanceAuthority(address previousScale, address newScale) external;
+    function CONFIG_ROLE() external view returns (bytes32);
+    function hasRole(bytes32 role, address account) external view returns (bool);
 
     function getUnitState(uint256 tokenId) external view returns (binderStructs.UnitStateView memory);
     function getNFTClass(uint256 tokenId) external view returns (uint256);
@@ -77,5 +80,6 @@ interface IBinderData is IERC721 {
     function authorizedBattleFactory(address factory) external view returns (bool);
     function authorizedFusionMinter(address minter) external view returns (bool);
     function authorizedBinderLogic(address logic) external view returns (bool);
+    function activeFusionCountByMinter(address minter) external view returns (uint256);
     function battleCheckpointNonce(uint256 tokenId) external view returns (uint32);
 }

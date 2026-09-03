@@ -126,8 +126,9 @@ contract InitializeGameData {
     }
 
     /// @notice Performs the post-setup runtime role wiring.
-    /// @dev Call only after `setup`. This helper contract must hold DEFAULT_ADMIN_ROLE
-    /// on Book0fLife and BinderData; grant it that authority temporarily when using a scripted deployment.
+    /// @dev Call only after `setup`. This legacy helper is deliberately limited
+    /// to purpose-specific mint/Fusion authorization; production deployments
+    /// should perform the same wiring through CentralConsole.
     function configureRuntimeRoles(
         address bookAddr,
         address binderAddr,
@@ -142,11 +143,15 @@ contract InitializeGameData {
         );
         Book0fLife book0fLife = Book0fLife(bookAddr);
         BinderData binderData = BinderData(binderAddr);
-        binderData.grantRole(binderData.MINTER_ROLE(), binderLogicAddr);
-        binderData.grantRole(binderData.FUSION_ROLE(), fusionMinterAddr);
+        // The caller has staged DEFAULT_ADMIN_ROLE for this helper. Grant its
+        // short-lived CONFIG authority only to use typed target operations.
+        binderData.grantRole(binderData.CONFIG_ROLE(), address(this));
+        book0fLife.grantRole(book0fLife.CONFIG_ROLE(), address(this));
+        binderData.setAuthorizedBinderLogic(binderLogicAddr, true);
+        binderData.setAuthorizedFusionMinter(fusionMinterAddr, true);
         binderData.grantRole(binderData.CONFIG_ROLE(), scaleOfBalanceAddr);
-        book0fLife.changeFusionMinterRole(fusionMinterAddr);
-        book0fLife.changeConfigRole(scaleOfBalanceAddr);
+        book0fLife.setFusionMinter(fusionMinterAddr);
+        book0fLife.grantRole(book0fLife.CONFIG_ROLE(), scaleOfBalanceAddr);
     }
 
     function _registerInitialRarities(Book0fLife book) internal {

@@ -41,7 +41,7 @@ contract BattleFactory is AccessControl, IBattleFactory {
 
     bytes32 public constant CONFIG_ROLE = keccak256("CONFIG_ROLE");
 
-    ICentralConsole public immutable centralConsole;
+    address public immutable centralConsole;
     address public immutable battleImplementation;
     mapping(address => bool) public override isBattleProxy;
     uint256 public nextInvitationId = 1;
@@ -98,7 +98,7 @@ contract BattleFactory is AccessControl, IBattleFactory {
         if (battleImplementationAddress.code.length == 0) {
             revert InvalidBattleImplementation(battleImplementationAddress);
         }
-        centralConsole = ICentralConsole(centralConsoleAddress);
+        centralConsole = centralConsoleAddress;
         battleImplementation = battleImplementationAddress;
         _grantRole(DEFAULT_ADMIN_ROLE, initialAdmin);
         _grantRole(CONFIG_ROLE, initialAdmin);
@@ -135,6 +135,7 @@ contract BattleFactory is AccessControl, IBattleFactory {
         external
         returns (address battleProxy)
     {
+        _requireCanonicalFactory();
         BattleInvitation storage invitation = _requireActiveInvitation(invitationId);
         if (msg.sender != invitation.opponent) {
             revert UnauthorizedInvitationParty(invitationId, invitation.opponent, msg.sender);
@@ -193,13 +194,13 @@ contract BattleFactory is AccessControl, IBattleFactory {
         uint256 count = challengerParty.tokenIds.length + opponentParty.tokenIds.length;
         if (count > BinderIds.MAX_BATTLE_PARTICIPANTS) revert InvalidBattleParticipantCount(count);
 
-        IBinderData binderData = IBinderData(centralConsole.binderData());
+        IBinderData binderData = IBinderData(ICentralConsole(centralConsole).binderData());
         if (binderData.getActivityController(BinderIds.ACTIVITY_BATTLE) != address(this)) {
             revert BattleActivityGatewayNotConfigured(binderData.getActivityController(BinderIds.ACTIVITY_BATTLE));
         }
 
-        IBook0fArts book0fArts = IBook0fArts(centralConsole.book0fArts());
-        IBook0fRealms book0fRealms = IBook0fRealms(centralConsole.book0fRealms());
+        IBook0fArts book0fArts = IBook0fArts(ICentralConsole(centralConsole).book0fArts());
+        IBook0fRealms book0fRealms = IBook0fRealms(ICentralConsole(centralConsole).book0fRealms());
         binderStructs.MapDefinition memory map = book0fRealms.getMap(invitation.mapId);
         if (!map.enabled) revert InvalidBattleProxy(address(0));
 
@@ -211,7 +212,7 @@ contract BattleFactory is AccessControl, IBattleFactory {
         BattleProxy.InitializationParams memory params;
         params.factoryAddress = address(this);
         params.binderDataAddress = address(binderData);
-        params.binderSkillsAddress = centralConsole.binderSkills();
+        params.binderSkillsAddress = ICentralConsole(centralConsole).binderSkills();
         params.book0fArtsAddress = address(book0fArts);
         params.book0fRealmsAddress = address(book0fRealms);
         params.requestedMapId = invitation.mapId;
@@ -245,7 +246,7 @@ contract BattleFactory is AccessControl, IBattleFactory {
         if (count == 0 || count > 6) revert InvalidBattleParticipantCount(count);
         if (party.spawnTileIds.length != count || party.selectedArtIds.length != count) revert MismatchedBattleInputs();
 
-        IBinderData binderData = IBinderData(centralConsole.binderData());
+        IBinderData binderData = IBinderData(ICentralConsole(centralConsole).binderData());
         for (uint256 index; index < count; ++index) {
             uint256 tokenId = party.tokenIds[index];
             address owner = binderData.ownerOf(tokenId);
@@ -363,7 +364,7 @@ contract BattleFactory is AccessControl, IBattleFactory {
     /// @dev Old factories intentionally keep this exit path after CentralConsole points new matches at a replacement factory.
     function endBattle(uint256[] calldata tokenIds) external override {
         if (!isBattleProxy[msg.sender]) revert InvalidBattleProxy(msg.sender);
-        IBinderData binderData = IBinderData(centralConsole.binderData());
+        IBinderData binderData = IBinderData(ICentralConsole(centralConsole).binderData());
         for (uint256 index; index < tokenIds.length; ++index) {
             uint256 tokenId = tokenIds[index];
             address owner = binderData.ownerOf(tokenId);
@@ -376,7 +377,7 @@ contract BattleFactory is AccessControl, IBattleFactory {
     }
 
     function _requireCanonicalFactory() internal view {
-        address canonicalFactory = centralConsole.battleFactory();
+        address canonicalFactory = ICentralConsole(centralConsole).battleFactory();
         if (canonicalFactory != address(this)) revert NotCanonicalBattleFactory(canonicalFactory, address(this));
     }
 }

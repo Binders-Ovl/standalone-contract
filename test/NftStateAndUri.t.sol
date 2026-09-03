@@ -3,11 +3,48 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 import "../modular/BinderData.sol";
-import "../modular/BinderUriBldr.sol";
 import "../modular/Book0fLife.sol";
-import "../modular/BattleManager.sol";
+import "../modular/Book0fArts.sol";
 import "../modular/scripts/InitializeGameData.sol";
 import "../modular/supportContract/binderStructs.sol";
+import "../modular/supportContract/BinderMetadata.sol";
+
+/// @dev Narrow read-only Skills stand-in for URI/state regression coverage.
+contract MetadataSkillsStub {
+    address public immutable binderData;
+
+    constructor(address binderDataAddress) {
+        binderData = binderDataAddress;
+    }
+
+    function getMoveSets(uint256) external pure returns (uint32[3] memory moveSets) {
+        return moveSets;
+    }
+
+    function hasActiveSkill(uint256, uint32) external pure returns (bool) {
+        return false;
+    }
+
+    function hasPassiveSkill(uint256, uint32) external pure returns (bool) {
+        return false;
+    }
+
+    function getActiveSkillCount(uint256) external pure returns (uint256) {
+        return 0;
+    }
+
+    function getPassiveSkillCount(uint256) external pure returns (uint256) {
+        return 0;
+    }
+
+    function getActiveSkills(uint256, uint256, uint256) external pure returns (uint32[] memory) {
+        return new uint32[](0);
+    }
+
+    function getPassiveSkills(uint256, uint256, uint256) external pure returns (uint32[] memory) {
+        return new uint32[](0);
+    }
+}
 
 /// @dev Test-only controller. Production activity controllers own their own
 /// authorization and settlement rules before invoking these BinderData calls.
@@ -27,8 +64,20 @@ contract MockActivityController {
     }
 }
 
+/// @dev Test-only stand-in for the future Graveyard's item/rule validator.
+contract GraveyardResurrectionController {
+    function resurrect(BinderData binderData, uint256 tokenId, address recipient, uint16 currentHP, uint16 currentMP)
+        external
+    {
+        binderData.resurrectFromGraveyard(tokenId, recipient, currentHP, currentMP);
+    }
+}
+
 contract NftStateAndUriTest is Test {
     event MetadataUpdate(uint256 tokenId);
+    event AdminPersistentVitalsUpdated(
+        uint256 indexed tokenId, uint16 currentHP, uint16 currentMP, address indexed admin
+    );
     event BatchMetadataUpdate(uint256 fromTokenId, uint256 toTokenId);
 
     address internal constant ALICE = address(0xA11CE);
@@ -38,25 +87,46 @@ contract NftStateAndUriTest is Test {
     uint256 internal constant TOKEN_ID = 1;
 
     BinderData internal binderData;
-    BinderUriBldr internal uriBuilder;
+    BinderMetadata internal metadata;
     Book0fLife internal book0fLife;
+    Book0fArts internal book0fArts;
     MockActivityController internal expedition;
     MockActivityController internal otherActivity;
 
     function setUp() public {
         binderData = new BinderData(address(this), "ipfs://images/");
+        binderData.setAuthorizedBinderLogic(address(this), true);
         book0fLife = new Book0fLife();
+        book0fArts = new Book0fArts(address(this));
         book0fLife.registerRarity(1, "Rare");
+        uint8[8] memory minStats = [uint8(1), 1, 1, 1, 1, 1, 1, 1];
+        uint8[8] memory maxStats = [uint8(20), 20, 20, 20, 20, 20, 20, 20];
+        book0fLife.addNewClass(
+            1,
+            "Knight",
+            1,
+            binderStructs.ClassConfig({
+                minStats: minStats,
+                maxStats: maxStats,
+                totalPoints: 8,
+                hpPerVit: 10,
+                mpPerWis: 10
+            }),
+            1
+        );
         binderData.setClassVersion(1, 1);
 
-        uriBuilder = new BinderUriBldr(address(binderData), address(book0fLife), address(this));
-        binderData.setBinderUriBldr(address(uriBuilder));
+        MetadataSkillsStub skills = new MetadataSkillsStub(address(binderData));
+        metadata = new BinderMetadata(
+            address(binderData), address(skills), address(book0fLife), address(book0fArts), address(this)
+        );
+        binderData.setBinderMetadata(address(metadata));
 
         expedition = new MockActivityController(binderData);
         otherActivity = new MockActivityController(binderData);
         binderData.setActivityController(8, address(expedition));
         binderData.setActivityController(9, address(otherActivity));
-        uriBuilder.setActivityName(8, "Expedition");
+        metadata.setActivityName(8, "Expedition");
         binderData.refreshAllMetadata();
 
         uint8[8] memory statValues = [uint8(11), 12, 13, 14, 15, 16, 17, 18];
@@ -67,15 +137,15 @@ contract NftStateAndUriTest is Test {
     }
 
     function testDecodedTokenURIAndAggregateStateStayConsistent() public view {
-        binderStructs.NFTMetadata memory metadata = binderData.getNFTDetails(TOKEN_ID);
+        binderStructs.NFTMetadata memory nftMetadata = binderData.getNFTDetails(TOKEN_ID);
         binderStructs.UnitStateView memory state = binderData.getUnitState(TOKEN_ID);
-        BinderUriBldr.UnitDetailsView memory details = uriBuilder.getUnitDetails(TOKEN_ID);
+        BinderMetadata.UnitDetailsView memory details = metadata.getUnitDetails(TOKEN_ID);
         string memory json = _decodeDataUri(binderData.tokenURI(TOKEN_ID));
 
-        assertEq(metadata.name, 'Knight "One"#1');
-        assertEq(details.name, metadata.name);
-        assertEq(details.classId, metadata.classId);
-        assertEq(details.rarityId, metadata.rarityId);
+        assertEq(nftMetadata.name, 'Knight "One"#1');
+        assertEq(details.name, nftMetadata.name);
+        assertEq(details.classId, nftMetadata.classId);
+        assertEq(details.rarityId, nftMetadata.rarityId);
         assertEq(details.rarityName, "Rare");
         assertEq(details.staticStats.stats[7], 18);
         assertEq(details.dynamicStats.maxHP, 150);
@@ -105,6 +175,43 @@ contract NftStateAndUriTest is Test {
         assertFalse(_contains(json, "nationId"));
     }
 
+    function testPermanentMintAndFullStatsRejectInvalidIdsVersionsAndVitals() public {
+        uint8[8] memory statValues = [uint8(1), 1, 1, 1, 1, 1, 1, 1];
+        binderStructs.StaticStats memory staticStats = binderStructs.StaticStats({stats: statValues});
+        binderStructs.DynamicStats memory validVitals =
+            binderStructs.DynamicStats({maxHP: 10, maxMP: 10, currentHP: 10, currentMP: 10});
+
+        vm.expectRevert(
+            abi.encodeWithSelector(BinderData.InvalidPermanentMetadata.selector, uint256(0), uint8(1), uint16(0))
+        );
+        binderData._mintRandomNFT(ALICE, 0, "Invalid", 1, "Rare", staticStats, validVitals);
+
+        binderStructs.DynamicStats memory invalidVitals =
+            binderStructs.DynamicStats({maxHP: 10, maxMP: 10, currentHP: 11, currentMP: 10});
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                BinderData.InvalidPermanentVitals.selector, uint16(11), uint16(10), uint16(10), uint16(10)
+            )
+        );
+        binderData._mintRandomNFT(ALICE, 1, "Invalid", 1, "Rare", staticStats, invalidVitals);
+
+        binderData.setClassVersion(1, 2);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                BinderData.InvalidPermanentVitals.selector, uint16(11), uint16(10), uint16(10), uint16(10)
+            )
+        );
+        binderData.updateNFTStats(TOKEN_ID, staticStats, invalidVitals);
+    }
+
+    function testFuzzAdminPersistentVitalsRemainWithinConfiguredBounds(uint16 requestedHP, uint16 requestedMP) public {
+        vm.assume(requestedHP != 0);
+        binderData.adminUpdatePersistentVitals(TOKEN_ID, requestedHP, requestedMP);
+        binderStructs.DynamicStats memory vitals = binderData.getNFTDetails(TOKEN_ID).dynamicStats;
+        assertLe(vitals.currentHP, vitals.maxHP);
+        assertLe(vitals.currentMP, vitals.maxMP);
+    }
+
     function testFutureActivityIsConfigOnlyAndBlocksStaleListingTransfer() public {
         vm.prank(ALICE);
         binderData.approve(MARKET, TOKEN_ID);
@@ -114,7 +221,7 @@ contract NftStateAndUriTest is Test {
         expedition.start(TOKEN_ID, 8, uint48(block.timestamp + 1 days));
 
         binderStructs.UnitStateView memory state = binderData.getUnitState(TOKEN_ID);
-        BinderUriBldr.UnitDetailsView memory details = uriBuilder.getUnitDetails(TOKEN_ID);
+        BinderMetadata.UnitDetailsView memory details = metadata.getUnitDetails(TOKEN_ID);
         assertFalse(state.idle);
         assertFalse(state.transferable);
         assertEq(state.activity.activityId, 8);
@@ -141,7 +248,7 @@ contract NftStateAndUriTest is Test {
 
     function testUnknownActivityFallbackAndEmergencyClear() public {
         otherActivity.start(TOKEN_ID, 9, 0);
-        BinderUriBldr.UnitDetailsView memory details = uriBuilder.getUnitDetails(TOKEN_ID);
+        BinderMetadata.UnitDetailsView memory details = metadata.getUnitDetails(TOKEN_ID);
         assertEq(details.activityName, "Activity #9");
         assertTrue(_contains(_decodeDataUri(binderData.tokenURI(TOKEN_ID)), "Activity #9"));
 
@@ -196,7 +303,11 @@ contract NftStateAndUriTest is Test {
     function testGraveyardClearsActivityAndIsTerminallyNonTransferable() public {
         binderData.setGraveyard(GRAVEYARD);
         expedition.start(TOKEN_ID, 8, 0);
-        binderData.updateCurrentStats(TOKEN_ID, 0, 54);
+
+        vm.expectRevert(abi.encodeWithSelector(BinderData.TokenBusy.selector, TOKEN_ID, uint8(8)));
+        binderData.adminUpdatePersistentVitals(TOKEN_ID, 0, 54);
+        expedition.end(TOKEN_ID);
+        binderData.adminUpdatePersistentVitals(TOKEN_ID, 0, 54);
 
         binderStructs.UnitStateView memory state = binderData.getUnitState(TOKEN_ID);
         assertEq(binderData.ownerOf(TOKEN_ID), GRAVEYARD);
@@ -208,6 +319,38 @@ contract NftStateAndUriTest is Test {
         binderData.transferFrom(GRAVEYARD, BOB, TOKEN_ID);
     }
 
+    function testGraveyardIsOneTimeAndResurrectionIsNarrowAndReversible() public {
+        GraveyardResurrectionController graveyard = new GraveyardResurrectionController();
+        binderData.setGraveyard(address(graveyard));
+        binderData.adminUpdatePersistentVitals(TOKEN_ID, 0, 50);
+        assertEq(binderData.ownerOf(TOKEN_ID), address(graveyard));
+
+        vm.expectRevert(abi.encodeWithSelector(BinderData.GraveyardAlreadyConfigured.selector, address(graveyard)));
+        binderData.setGraveyard(address(0xBEEF));
+
+        vm.prank(ALICE);
+        vm.expectRevert(abi.encodeWithSelector(BinderData.UnauthorizedResurrection.selector, ALICE));
+        binderData.resurrectFromGraveyard(TOKEN_ID, ALICE, 50, 25);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                BinderData.InvalidResurrectionVitals.selector, TOKEN_ID, uint16(0), uint16(25), uint16(150), uint16(70)
+            )
+        );
+        graveyard.resurrect(binderData, TOKEN_ID, ALICE, 0, 25);
+
+        graveyard.resurrect(binderData, TOKEN_ID, ALICE, 50, 25);
+        assertEq(binderData.ownerOf(TOKEN_ID), ALICE);
+        binderStructs.NFTMetadata memory resurrected = binderData.getNFTDetails(TOKEN_ID);
+        assertEq(resurrected.dynamicStats.currentHP, 50);
+        assertEq(resurrected.dynamicStats.currentMP, 25);
+
+        binderData.adminUpdatePersistentVitals(TOKEN_ID, 0, 25);
+        binderData.burnGraveyardedBinder(TOKEN_ID);
+        vm.expectRevert(abi.encodeWithSelector(BinderData.InvalidToken.selector, TOKEN_ID));
+        graveyard.resurrect(binderData, TOKEN_ID, ALICE, 50, 25);
+    }
+
     function testErc4906AndPauseSemantics() public {
         assertTrue(binderData.supportsInterface(0x49064906));
         assertEq(uint256(uint32(binderData.ERC4906_INTERFACE_ID())), uint256(uint32(0x49064906)));
@@ -217,42 +360,31 @@ contract NftStateAndUriTest is Test {
         binderData.unpause();
         assertTrue(binderData.getUnitState(TOKEN_ID).transferable);
 
-        vm.recordLogs();
-        binderData.updateCurrentStats(TOKEN_ID, 140, 53);
-        Vm.Log[] memory logs = vm.getRecordedLogs();
-        assertEq(logs.length, 0, "ordinary HP/MP updates do not emit metadata refreshes");
-    }
-
-    function testBattleManagerRequiresRoleOnBinderDataItself() public {
-        BinderBattleManager battleManager = new BinderBattleManager(address(binderData));
-        battleManager.grantRole(battleManager.BATTLE_ROLE(), address(this));
-
-        vm.expectRevert();
-        battleManager.applyDamage(TOKEN_ID, 3, 0);
-
-        binderData.grantRole(binderData.BATTLE_ROLE(), address(battleManager));
-        battleManager.applyDamage(TOKEN_ID, 3, 0);
-        assertEq(binderData.getNFTDetails(TOKEN_ID).dynamicStats.currentHP, 140);
+        vm.expectEmit(true, false, false, true, address(binderData));
+        emit AdminPersistentVitalsUpdated(TOKEN_ID, 140, 53, address(this));
+        binderData.adminUpdatePersistentVitals(TOKEN_ID, 140, 53);
+        binderStructs.NFTMetadata memory nftMetadata = binderData.getNFTDetails(TOKEN_ID);
+        assertEq(nftMetadata.dynamicStats.currentHP, 140);
+        assertEq(nftMetadata.dynamicStats.currentMP, 53);
     }
 
     function testRuntimeRoleConfiguratorAssignsRolesOnTargetContracts() public {
         InitializeGameData initializer = new InitializeGameData();
-        address binderLogic = address(0xB1);
-        address fusionMinter = address(0xF1);
+        address binderLogic = address(new MockActivityController(binderData));
+        address fusionMinter = address(new MockActivityController(binderData));
         address scaleOfBalance = address(0x5CA1E);
-        BinderBattleManager battleManager = new BinderBattleManager(address(binderData));
 
         binderData.grantRole(binderData.DEFAULT_ADMIN_ROLE(), address(initializer));
         book0fLife.grantRole(book0fLife.DEFAULT_ADMIN_ROLE(), address(initializer));
         initializer.configureRuntimeRoles(
             address(book0fLife), address(binderData), binderLogic, fusionMinter, scaleOfBalance
         );
-        initializer.configureBattleManagerRole(address(binderData), address(battleManager));
 
-        assertTrue(binderData.hasRole(binderData.MINTER_ROLE(), binderLogic));
-        assertTrue(binderData.hasRole(binderData.FUSION_ROLE(), fusionMinter));
+        assertTrue(binderData.authorizedBinderLogic(binderLogic));
+        assertTrue(binderData.authorizedFusionMinter(fusionMinter));
+        assertFalse(binderData.hasRole(binderData.MINTER_ROLE(), binderLogic));
+        assertFalse(binderData.hasRole(binderData.FUSION_ROLE(), fusionMinter));
         assertTrue(binderData.hasRole(binderData.CONFIG_ROLE(), scaleOfBalance));
-        assertTrue(binderData.hasRole(binderData.BATTLE_ROLE(), address(battleManager)));
         assertTrue(book0fLife.hasRole(book0fLife.FUSION_MINTER(), fusionMinter));
         assertTrue(book0fLife.hasRole(book0fLife.CONFIG_ROLE(), scaleOfBalance));
     }

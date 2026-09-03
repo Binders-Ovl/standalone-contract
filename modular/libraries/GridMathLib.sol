@@ -67,7 +67,9 @@ library GridMathLib {
     }
 
     function sumMovementCosts(uint16[] memory movementCosts) internal pure returns (uint256 totalCost) {
-        for (uint256 index; index < movementCosts.length; ++index) totalCost += movementCosts[index];
+        for (uint256 index; index < movementCosts.length; ++index) {
+            totalCost += movementCosts[index];
+        }
     }
 
     function _requireTile(uint16 tileId, uint16 width, uint16 tileCount) private pure {

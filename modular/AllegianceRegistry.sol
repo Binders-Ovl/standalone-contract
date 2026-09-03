@@ -26,7 +26,9 @@ contract AllegianceRegistry is AccessControl {
     event NationNameUpdated(uint8 indexed nationId, string name);
     event NationActiveStatusChanged(uint8 indexed nationId, bool active);
     event PlayerJoinedNation(address indexed player, uint8 indexed nationId, uint48 nextChangeAt);
-    event AllegianceChanged(address indexed player, uint8 indexed oldNationId, uint8 indexed newNationId, uint48 nextChangeAt);
+    event AllegianceChanged(
+        address indexed player, uint8 indexed oldNationId, uint8 indexed newNationId, uint48 nextChangeAt
+    );
     event AllegianceCooldownChanged(uint32 previousCooldown, uint32 newCooldown);
     event NationRelationChanged(uint8 indexed nationA, uint8 indexed nationB, uint8 relationId);
 

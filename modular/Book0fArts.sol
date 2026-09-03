@@ -101,7 +101,9 @@ contract Book0fArts is AccessControl, IBook0fArts {
         uint256 available = sourceLength - offset;
         uint256 pageLength = limit < available ? limit : available;
         uint32[] memory page = new uint32[](pageLength);
-        for (uint256 i; i < pageLength; ++i) page[i] = _artIds[offset + i];
+        for (uint256 i; i < pageLength; ++i) {
+            page[i] = _artIds[offset + i];
+        }
         return page;
     }
 
@@ -169,7 +171,9 @@ contract Book0fArts is AccessControl, IBook0fArts {
         uint256 available = sourceLength - offset;
         uint256 pageLength = limit < available ? limit : available;
         uint256[] memory page = new uint256[](pageLength);
-        for (uint256 i; i < pageLength; ++i) page[i] = source[offset + i];
+        for (uint256 i; i < pageLength; ++i) {
+            page[i] = source[offset + i];
+        }
         return page;
     }
 
@@ -179,7 +183,9 @@ contract Book0fArts is AccessControl, IBook0fArts {
         _storeVersionMemory(definitionCopy, eligibilityCopy);
     }
 
-    function _storeVersionMemory(binderStructs.ArtDefinition memory definition, uint256[] memory eligibility) internal {
+    function _storeVersionMemory(binderStructs.ArtDefinition memory definition, uint256[] memory eligibility)
+        internal
+    {
         _validateDefinition(definition);
         uint32 artId = definition.artId;
         uint16 version = definition.version;
@@ -206,7 +212,8 @@ contract Book0fArts is AccessControl, IBook0fArts {
     function _validateDefinition(binderStructs.ArtDefinition memory definition) internal pure {
         if (
             definition.artId == 0 || definition.version == 0 || bytes(definition.name).length == 0
-                || definition.artTypeId == BinderIds.ART_TYPE_INVALID || definition.effectTypeId == BinderIds.EFFECT_TYPE_INVALID
+                || definition.artTypeId == BinderIds.ART_TYPE_INVALID
+                || definition.effectTypeId == BinderIds.EFFECT_TYPE_INVALID
                 || definition.patternTypeId == BinderIds.PATTERN_TYPE_INVALID
                 || definition.primaryFormula.termCount > BinderIds.MAX_FORMULA_TERMS
                 || definition.secondaryFormula.termCount > BinderIds.MAX_FORMULA_TERMS
@@ -261,13 +268,19 @@ contract Book0fArts is AccessControl, IBook0fArts {
         }
     }
 
-    function _pageVersions(uint16[] storage source, uint256 offset, uint256 limit) internal view returns (uint16[] memory) {
+    function _pageVersions(uint16[] storage source, uint256 offset, uint256 limit)
+        internal
+        view
+        returns (uint16[] memory)
+    {
         uint256 sourceLength = source.length;
         if (offset >= sourceLength || limit == 0) return new uint16[](0);
         uint256 available = sourceLength - offset;
         uint256 pageLength = limit < available ? limit : available;
         uint16[] memory page = new uint16[](pageLength);
-        for (uint256 i; i < pageLength; ++i) page[i] = source[offset + i];
+        for (uint256 i; i < pageLength; ++i) {
+            page[i] = source[offset + i];
+        }
         return page;
     }
 

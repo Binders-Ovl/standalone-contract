@@ -48,6 +48,9 @@ contract Book0fLife is AccessControl {
     mapping(uint256 => mapping(uint256 => uint256)) private _fusionPairIndex;
     mapping(uint256 => mapping(uint256 => binderStructs.FusionRecipe)) private _fusionRecipe;
 
+    /// @dev Legacy primary-config-admin display field. AccessControl is the
+    /// authoritative membership source; Console may retain a separate CONFIG
+    /// role while Balance-module authority rotates.
     address public currentConfigAdmin;
     address public currentFusionMinter;
     IAllegianceRegistry public allegianceRegistry;
@@ -684,6 +687,25 @@ contract Book0fLife is AccessControl {
         _grantRole(FUSION_MINTER, newFusionMinter);
         currentFusionMinter = newFusionMinter;
         emit FusionMinterRoleChanged(msg.sender, newFusionMinter);
+    }
+
+    /// @notice Removes an outgoing minter's read role after its custody work
+    /// has been finalized by CentralConsole. The canonical minter is never
+    /// removable through this narrow operation.
+    function revokeFusionMinter(address oldFusionMinter) external onlyRole(CONFIG_ROLE) {
+        require(oldFusionMinter != address(0) && oldFusionMinter != currentFusionMinter, "Invalid fusion minter");
+        _revokeRole(FUSION_MINTER, oldFusionMinter);
+    }
+
+    /// @notice Moves only the Balance module's CONFIG authority. Unlike the
+    /// historical `changeConfigRole`, it preserves the Console's wiring role
+    /// and does not mutate the legacy primary-admin display field.
+    function setScaleOfBalanceAuthority(address previousScale, address newScale) external onlyRole(CONFIG_ROLE) {
+        require(newScale != address(0) && newScale.code.length != 0, "Invalid scale");
+        _grantRole(CONFIG_ROLE, newScale);
+        if (previousScale != address(0) && previousScale != newScale) {
+            _revokeRole(CONFIG_ROLE, previousScale);
+        }
     }
 
     // === Internal helpers ===

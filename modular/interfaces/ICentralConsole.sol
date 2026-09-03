@@ -9,8 +9,11 @@ interface ICentralConsole {
         bool metadataDependenciesMatch;
         bool bookLifeDependenciesMatch;
         bool battleFactoryMatch;
+        bool battleFactoryDependenciesMatch;
         bool battleActivityControllerMatch;
         bool fusionActivityControllerMatch;
+        bool binderLogicCanonicalAndAccepting;
+        bool scaleDependenciesAndAuthorityMatch;
         bool allegianceDependenciesMatch;
     }
 
@@ -32,15 +35,19 @@ interface ICentralConsole {
     function isCanonicalModule(address moduleAddress) external view returns (bool);
 
     function setBinderSkills(address moduleAddress) external;
+    function configureBinderSkills(address moduleAddress, address compatibleMetadata) external;
     function setBinderMetadata(address moduleAddress) external;
     function setBook0fLife(address moduleAddress) external;
     function setBook0fArts(address moduleAddress) external;
     function setBook0fRealms(address moduleAddress) external;
     function setBinderLogic(address moduleAddress) external;
+    function finalizeBinderLogicRetirement(address oldLogic) external;
     function setFusionMinter(address moduleAddress) external;
+    function finalizeFusionMinterRetirement(address oldMinter) external;
     function setScaleOfBalance(address moduleAddress) external;
     function setBattleFactory(address moduleAddress, uint32 implementationVersion) external;
     function setAllegianceRegistry(address moduleAddress) external;
     function setActivityModule(uint8 activityId, address moduleAddress) external;
     function getWiringStatus() external view returns (WiringStatus memory);
+    function isFullyWired() external view returns (bool);
 }

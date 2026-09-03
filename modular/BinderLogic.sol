@@ -30,7 +30,11 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
     IAllegianceRegistry public allegianceRegistry;
 
     uint256 public mintPrice = 0.0125 ether;
-    bytes32 public previousRandomNumber;
+    /// @notice Whether this logic instance may create new entropy work.
+    /// @dev Disabling intake intentionally leaves recorded requests callable by
+    /// Entropy so a Console rotation cannot strand a paid mint.
+    bool public acceptingRequests = true;
+    uint256 public pendingMintCount;
     mapping(uint64 => MintRequest) private _mintRequests;
 
     uint8[] private _activeRarityIds;
@@ -41,9 +45,12 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
     event RarityDistributionChanged(uint8[] rarityIds, uint16[] chancesBps);
     event AllegianceRegistryUpdated(address indexed registry);
     event Book0fLifeUpdated(address indexed book);
+    event MintRequestAcceptanceChanged(bool accepting);
     event NativeFundsWithdrawn(address indexed recipient, uint256 amount);
 
     error InvalidMintRequest(uint64 sequenceNumber);
+    error MintRequestsDisabled();
+    error DuplicateEntropySequence(uint64 sequenceNumber);
     error InvalidRarityDistribution();
     error NoEligibleClass(uint8 rarityId, uint8 nationId);
 
@@ -79,6 +86,7 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
     }
 
     function requestMint(bytes32 userSeed) external payable nonReentrant {
+        if (!acceptingRequests) revert MintRequestsDisabled();
         uint256 fee = entropy.getFeeV2(provider, 0);
         require(msg.value >= fee + mintPrice, "Not enough gold MyLord");
 
@@ -86,7 +94,9 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
         // consult live allegiance, including if a provider implementation evolves.
         uint8 nationId = allegianceRegistry.getPlayerNation(msg.sender);
         uint64 sequenceNumber = entropy.requestV2{value: fee}(provider, userSeed, 0);
+        if (_mintRequests[sequenceNumber].recipient != address(0)) revert DuplicateEntropySequence(sequenceNumber);
         _mintRequests[sequenceNumber] = MintRequest({recipient: msg.sender, nationId: nationId});
+        ++pendingMintCount;
         emit RandomRequest(msg.sender, sequenceNumber, nationId);
     }
 
@@ -112,8 +122,8 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
             dynamicStats
         );
 
-        previousRandomNumber = randomNumber;
         delete _mintRequests[sequenceNumber];
+        --pendingMintCount;
         emit RandomMintCompleted(request.recipient, sequenceNumber, rarityId, classId);
     }
 
@@ -157,6 +167,12 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
         require(book != address(0) && book.code.length != 0, "Invalid book");
         book0fLife = IBook0fLife(book);
         emit Book0fLifeUpdated(book);
+    }
+
+    /// @notice Opens or closes new mint intake without affecting settled-work callbacks.
+    function setAcceptingRequests(bool accepting) external onlyRole(CONFIG_ROLE) {
+        acceptingRequests = accepting;
+        emit MintRequestAcceptanceChanged(accepting);
     }
 
     function setMintPrice(uint256 newMintPrice) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -212,7 +228,7 @@ contract BinderLogic is Ownable, AccessControl, ReentrancyGuard, IEntropyConsume
             _selectEligibleClass(rarityId, nationId, uint256(keccak256(abi.encodePacked("BINDERS_CLASS", entropySeed))));
 
         binderStructs.ClassConfig memory config = book0fLife.getClassConfig(classId);
-        bytes32 statSeed = keccak256(abi.encodePacked("BINDERS_STATS", previousRandomNumber, entropySeed));
+        bytes32 statSeed = keccak256(abi.encodePacked("BINDERS_STATS", entropySeed));
         stats = _allocateStats(config, statSeed);
         dynamicStats = binderStructs.DynamicStats({
             maxHP: uint16(stats.stats[4]) * config.hpPerVit,

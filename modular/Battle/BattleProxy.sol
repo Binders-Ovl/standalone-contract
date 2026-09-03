@@ -114,6 +114,8 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
     error BattleUnitNotAlive(uint256 tokenId);
     error ArtNotSelected(uint256 tokenId, uint32 artId);
     error ArtNotLearned(uint256 tokenId, uint32 artId);
+    error BattleArtUnavailable(uint32 artId);
+    error BattleArtClassIneligible(uint256 tokenId, uint32 artId, uint256 classId, uint16 version);
     error UnsupportedBattleArtType(uint8 artTypeId);
     error UnsupportedBattlePattern(uint8 patternTypeId);
     error UnsupportedBattleEffect(uint8 effectTypeId);
@@ -417,8 +419,15 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
             uint32 artId = loadout[index];
             if (artId == 0 || _selectedArts[tokenId][artId]) revert InvalidBattleInput();
             if (!_isLearned(tokenId, artId)) revert ArtNotLearned(tokenId, artId);
+            if (!book0fArts.artExists(artId)) revert BattleArtUnavailable(artId);
             binderStructs.ArtDefinition memory art = book0fArts.getArtDefinition(artId);
-            if (!art.enabled) revert InvalidBattleInput();
+            if (art.version == 0 || !art.enabled) revert BattleArtUnavailable(artId);
+            if (!book0fArts.isClassEligible(artId, art.version, metadata.classId)) {
+                revert BattleArtClassIneligible(tokenId, artId, metadata.classId, art.version);
+            }
+            if (art.artTypeId != BinderIds.ART_TYPE_MOVE_SET && art.artTypeId != BinderIds.ART_TYPE_ACTIVE) {
+                revert UnsupportedBattleArtType(art.artTypeId);
+            }
             _selectedArts[tokenId][artId] = true;
             if (_artVersions[artId] == 0) _artVersions[artId] = art.version;
         }

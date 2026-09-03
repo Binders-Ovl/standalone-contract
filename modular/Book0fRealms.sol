@@ -50,10 +50,10 @@ contract Book0fRealms is AccessControl, IBook0fRealms {
         _storeMapVersion(definition, tiles);
     }
 
-    function updateMapVersion(binderStructs.MapDefinition calldata definition, binderStructs.TileDefinition[] calldata tiles)
-        external
-        onlyRole(CONFIG_ROLE)
-    {
+    function updateMapVersion(
+        binderStructs.MapDefinition calldata definition,
+        binderStructs.TileDefinition[] calldata tiles
+    ) external onlyRole(CONFIG_ROLE) {
         _requireMap(definition.mapId);
         if (definition.version <= _currentVersion[definition.mapId]) revert InvalidMapVersion(definition.version);
         _storeMapVersion(definition, tiles);
@@ -97,7 +97,10 @@ contract Book0fRealms is AccessControl, IBook0fRealms {
     }
 
     /// @notice Chunk-safe migration import for castle/world bindings.
-    function importCastleBindings(uint256[] calldata castleIds, uint32[] calldata mapIds) external onlyRole(CONFIG_ROLE) {
+    function importCastleBindings(uint256[] calldata castleIds, uint32[] calldata mapIds)
+        external
+        onlyRole(CONFIG_ROLE)
+    {
         require(castleIds.length == mapIds.length, "Mismatched castle import");
         for (uint256 i; i < castleIds.length; ++i) {
             if (castleIds[i] == 0) revert InvalidMapDefinition();
@@ -121,7 +124,9 @@ contract Book0fRealms is AccessControl, IBook0fRealms {
         uint256 available = sourceLength - offset;
         uint256 pageLength = limit < available ? limit : available;
         uint32[] memory page = new uint32[](pageLength);
-        for (uint256 i; i < pageLength; ++i) page[i] = _mapIds[offset + i];
+        for (uint256 i; i < pageLength; ++i) {
+            page[i] = _mapIds[offset + i];
+        }
         return page;
     }
 
@@ -164,7 +169,9 @@ contract Book0fRealms is AccessControl, IBook0fRealms {
         uint256 available = sourceLength - offset;
         uint256 pageLength = limit < available ? limit : available;
         uint16[] memory page = new uint16[](pageLength);
-        for (uint256 i; i < pageLength; ++i) page[i] = source[offset + i];
+        for (uint256 i; i < pageLength; ++i) {
+            page[i] = source[offset + i];
+        }
         return page;
     }
 
@@ -227,9 +234,10 @@ contract Book0fRealms is AccessControl, IBook0fRealms {
         return _tiles[mapId][version][tileId].walkable;
     }
 
-    function _storeMapVersion(binderStructs.MapDefinition calldata definition, binderStructs.TileDefinition[] calldata tiles)
-        internal
-    {
+    function _storeMapVersion(
+        binderStructs.MapDefinition calldata definition,
+        binderStructs.TileDefinition[] calldata tiles
+    ) internal {
         _validateMapDefinition(definition, tiles.length);
         uint32 mapId = definition.mapId;
         uint16 version = definition.version;
@@ -262,7 +270,9 @@ contract Book0fRealms is AccessControl, IBook0fRealms {
                 || bytes(definition.name).length == 0
         ) revert InvalidMapDefinition();
         uint256 expectedTileCount = uint256(definition.width) * definition.height;
-        if (expectedTileCount > type(uint16).max || suppliedTileCount != expectedTileCount) revert InvalidMapDefinition();
+        if (expectedTileCount > type(uint16).max || suppliedTileCount != expectedTileCount) {
+            revert InvalidMapDefinition();
+        }
     }
 
     function _requireMap(uint32 mapId) internal view {
@@ -287,5 +297,4 @@ contract Book0fRealms is AccessControl, IBook0fRealms {
     function _tileCount(binderStructs.MapDefinition memory definition) internal pure returns (uint256) {
         return uint256(definition.width) * definition.height;
     }
-
 }

@@ -125,12 +125,8 @@ contract NationRarityMigrationTest is Test {
         book.setClassAcquisitionFlags(1, book.ACQ_EVENT_MINT());
         book.assignClassToNation(1, 0);
 
-        binderStructs.EventMintSchedule memory schedule = binderStructs.EventMintSchedule({
-            enabled: true,
-            startTime: 100,
-            endTime: 200,
-            slotDuration: 0
-        });
+        binderStructs.EventMintSchedule memory schedule =
+            binderStructs.EventMintSchedule({enabled: true, startTime: 100, endTime: 200, slotDuration: 0});
         book.setEventMintSchedule(1, schedule);
         vm.warp(99);
         assertFalse(book.isClassMintEligible(1, 0));
