@@ -267,9 +267,9 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
                 uint8 randByte = uint8(entropyBytes[byteIndex]);
 
                 uint8 current = stats.stats[statIndex];
-                uint8 maxAdd = config.maxStats[statIndex] - current;
+                uint16 maxAdd = uint16(config.maxStats[statIndex]) - current;
                 if (maxAdd == 0) continue;
-                uint8 alloc = randByte % (maxAdd + 1);
+                uint8 alloc = uint8(randByte % (maxAdd + 1));
                 alloc = alloc < remainingPoints ? alloc : uint8(remainingPoints);
                 stats.stats[statIndex] = current + alloc;
                 remainingPoints -= alloc;
@@ -280,7 +280,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
             for (uint256 i = 0; i < 8 && remainingPoints > 0; i++) {
                 uint8 statIndex = statOrder[i];
                 uint8 current = stats.stats[statIndex];
-                uint8 maxAdd = config.maxStats[statIndex] - current;
+                uint16 maxAdd = uint16(config.maxStats[statIndex]) - current;
                 if (maxAdd == 0) continue;
                 stats.stats[statIndex] = current + 1;
                 remainingPoints--;

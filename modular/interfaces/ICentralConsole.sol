@@ -7,14 +7,19 @@ interface ICentralConsole {
         bool binderDataMetadataMatch;
         bool binderSkillsPairMatch;
         bool metadataDependenciesMatch;
+        bool metadataRefreshAuthorityMatch;
         bool bookLifeDependenciesMatch;
+        bool book0fRealmsConfigured;
         bool battleFactoryMatch;
         bool battleFactoryDependenciesMatch;
         bool battleActivityControllerMatch;
+        bool fusionDependenciesMatch;
         bool fusionActivityControllerMatch;
         bool binderLogicCanonicalAndAccepting;
         bool scaleDependenciesAndAuthorityMatch;
         bool allegianceDependenciesMatch;
+        bool graveyardConfigured;
+        bool consoleAuthorityMatch;
     }
 
     function binderData() external view returns (address);

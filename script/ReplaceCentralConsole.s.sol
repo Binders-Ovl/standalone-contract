@@ -58,10 +58,11 @@ contract ReplaceCentralConsole is Script {
     {
         BinderData binderData = BinderData(input.binderData);
         Book0fLife life = Book0fLife(input.book0fLife);
+        BinderLogic logic = BinderLogic(input.binderLogic);
         BinderSkills skills = BinderSkills(input.binderSkills);
         CentralConsole newConsole = new CentralConsole(deployer, input.binderData);
 
-        _stagePermissions(binderData, life, skills, newConsole);
+        _stagePermissions(binderData, life, logic, skills, newConsole);
         _registerModules(newConsole, input);
 
         BattleProxy implementation = new BattleProxy();
@@ -69,15 +70,20 @@ contract ReplaceCentralConsole is Script {
         newConsole.setBattleFactory(address(factory), input.nextBattleFactoryVersion);
         require(newConsole.isFullyWired(), "Incomplete replacement wiring");
 
-        _revokeOldControlPlane(binderData, life, CentralConsole(input.oldConsole), deployer);
+        _revokeOldControlPlane(binderData, life, logic, CentralConsole(input.oldConsole), deployer);
         return (address(newConsole), address(factory));
     }
 
-    function _stagePermissions(BinderData binderData, Book0fLife life, BinderSkills skills, CentralConsole newConsole)
-        internal
-    {
+    function _stagePermissions(
+        BinderData binderData,
+        Book0fLife life,
+        BinderLogic logic,
+        BinderSkills skills,
+        CentralConsole newConsole
+    ) internal {
         binderData.grantRole(binderData.CONFIG_ROLE(), address(newConsole));
         life.grantRole(life.CONFIG_ROLE(), address(newConsole));
+        logic.grantRole(logic.CONFIG_ROLE(), address(newConsole));
         skills.grantRole(skills.DEFAULT_ADMIN_ROLE(), address(newConsole));
     }
 
@@ -93,11 +99,16 @@ contract ReplaceCentralConsole is Script {
         newConsole.setScaleOfBalance(input.scaleOfBalance);
     }
 
-    function _revokeOldControlPlane(BinderData binderData, Book0fLife life, CentralConsole oldConsole, address deployer)
-        internal
-    {
+    function _revokeOldControlPlane(
+        BinderData binderData,
+        Book0fLife life,
+        BinderLogic logic,
+        CentralConsole oldConsole,
+        address deployer
+    ) internal {
         binderData.revokeRole(binderData.CONFIG_ROLE(), address(oldConsole));
         life.revokeRole(life.CONFIG_ROLE(), address(oldConsole));
+        logic.revokeRole(logic.CONFIG_ROLE(), address(oldConsole));
         oldConsole.revokeRole(oldConsole.CONFIG_ROLE(), deployer);
     }
 }

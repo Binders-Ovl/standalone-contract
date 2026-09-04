@@ -140,6 +140,24 @@ contract FusionLifecycleTest is Test {
         entropy.resolve(fusion, PROVIDER, sequence, bytes32(uint256(123)));
     }
 
+    function testFusionAllocatesAtMaxAdd254() public {
+        life.addNewClass(3, "Boundary", 1, _maxFusionGapConfig(), 1);
+        life.enableClassAcquisition(3, life.ACQ_FUSION());
+        binderData.setClassVersion(3, 1);
+
+        uint256[] memory outcomes = new uint256[](1);
+        outcomes[0] = 3;
+        uint16[] memory weights = new uint16[](1);
+        weights[0] = 10_000;
+        life.setFusionRecipe(1, 2, outcomes, weights, 10_000);
+
+        uint256 fusionId = _requestFusion();
+        (,,,, uint64 sequence,) = fusion.getFusionRequest(fusionId);
+        entropy.resolve(fusion, PROVIDER, sequence, bytes32(0));
+
+        assertEq(binderData.ownerOf(3), ALICE);
+    }
+
     function _requestFusion() internal returns (uint256 fusionId) {
         vm.startPrank(ALICE);
         binderData.approve(address(fusion), 1);
@@ -182,6 +200,16 @@ contract FusionLifecycleTest is Test {
             totalPoints: 8,
             hpPerVit: 10,
             mpPerWis: 10
+        });
+    }
+
+    function _maxFusionGapConfig() internal pure returns (binderStructs.ClassConfig memory config) {
+        config = binderStructs.ClassConfig({
+            minStats: [uint8(1), 1, 1, 1, 1, 1, 1, 1],
+            maxStats: [uint8(255), 255, 255, 255, 255, 255, 255, 255],
+            totalPoints: 1,
+            hpPerVit: 1,
+            mpPerWis: 1
         });
     }
 }

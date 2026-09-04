@@ -1,8 +1,8 @@
 # Fix-1b BinderData size plan
 
-`BinderData` is deliberately still plain ERC-721 in Fix-1b. The test suite prints
-its optimized runtime size and EIP-170 headroom at every release gate, with an
-early warning at 24,100 bytes and a hard deployment cap of 24,576 bytes.
+`BinderData` is deliberately still plain ERC-721 in Fix-1b. The test suite enforces
+Monad's 128-KB deployed-code limit and prints EIP-170 headroom as an ERC721C
+planning reference. The 24,100-byte warning is not a Monad deployment blocker.
 
 The current repository does not contain an ERC721C implementation or a selected
 transfer-validator dependency. Therefore an "exact ERC721C" proof-of-concept

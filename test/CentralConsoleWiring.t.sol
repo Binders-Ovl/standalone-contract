@@ -16,11 +16,15 @@ import "../modular/Battle/BattleFactory.sol";
 import "../modular/Battle/BattleProxy.sol";
 import "../modular/supportContract/BinderMetadata.sol";
 import "../modular/supportContract/CentralConsole.sol";
+import "../modular/supportContract/Errors.sol";
+import "../modular/supportContract/binderIds.sol";
 import "../modular/interfaces/ICentralConsole.sol";
 
 contract WiringEntropyStub {}
 
 contract CentralConsoleWiringTest is Test {
+    address internal constant GRAVEYARD = address(0xDEAD);
+
     BinderData internal binderData;
     CentralConsole internal centralConsole;
     AllegianceRegistry internal allegiance;
@@ -36,6 +40,7 @@ contract CentralConsoleWiringTest is Test {
 
     function setUp() public {
         binderData = new BinderData(address(this), "");
+        binderData.setGraveyard(GRAVEYARD);
         centralConsole = new CentralConsole(address(this), address(binderData));
         binderData.grantRole(binderData.CONFIG_ROLE(), address(centralConsole));
         allegiance = new AllegianceRegistry(address(this));
@@ -78,14 +83,19 @@ contract CentralConsoleWiringTest is Test {
         assertTrue(status.binderDataMetadataMatch);
         assertTrue(status.binderSkillsPairMatch);
         assertTrue(status.metadataDependenciesMatch);
+        assertTrue(status.metadataRefreshAuthorityMatch);
         assertTrue(status.bookLifeDependenciesMatch);
+        assertTrue(status.book0fRealmsConfigured);
         assertTrue(status.battleFactoryMatch);
         assertTrue(status.battleFactoryDependenciesMatch);
         assertTrue(status.battleActivityControllerMatch);
+        assertTrue(status.fusionDependenciesMatch);
         assertTrue(status.fusionActivityControllerMatch);
         assertTrue(status.binderLogicCanonicalAndAccepting);
         assertTrue(status.scaleDependenciesAndAuthorityMatch);
         assertTrue(status.allegianceDependenciesMatch);
+        assertTrue(status.graveyardConfigured);
+        assertTrue(status.consoleAuthorityMatch);
         assertTrue(centralConsole.isFullyWired());
     }
 
@@ -93,6 +103,7 @@ contract CentralConsoleWiringTest is Test {
         CentralConsole replacement = new CentralConsole(address(this), address(binderData));
         binderData.grantRole(binderData.CONFIG_ROLE(), address(replacement));
         life.grantRole(life.CONFIG_ROLE(), address(replacement));
+        logic.grantRole(logic.CONFIG_ROLE(), address(replacement));
         skills.grantRole(skills.DEFAULT_ADMIN_ROLE(), address(replacement));
 
         replacement.setBook0fLife(address(life));
@@ -113,9 +124,19 @@ contract CentralConsoleWiringTest is Test {
 
         binderData.revokeRole(binderData.CONFIG_ROLE(), address(centralConsole));
         life.revokeRole(life.CONFIG_ROLE(), address(centralConsole));
+        logic.revokeRole(logic.CONFIG_ROLE(), address(centralConsole));
         centralConsole.revokeRole(centralConsole.CONFIG_ROLE(), address(this));
+        assertFalse(logic.hasRole(logic.CONFIG_ROLE(), address(centralConsole)));
         vm.expectRevert();
         centralConsole.setBook0fArts(address(arts));
+    }
+
+    function testReservedActivityIdsCannotUseGenericSetter() public {
+        vm.expectRevert(abi.encodeWithSelector(InvalidActivityModuleId.selector, BinderIds.ACTIVITY_BATTLE));
+        centralConsole.setActivityModule(BinderIds.ACTIVITY_BATTLE, address(battleFactory));
+
+        vm.expectRevert(abi.encodeWithSelector(InvalidActivityModuleId.selector, BinderIds.ACTIVITY_FUSION));
+        centralConsole.setActivityModule(BinderIds.ACTIVITY_FUSION, address(fusion));
     }
 
     function testDiagnosticsHandleUnconfiguredOptionalModulesWithoutReverting() public {
@@ -123,6 +144,13 @@ contract CentralConsoleWiringTest is Test {
         ICentralConsole.WiringStatus memory status = blank.getWiringStatus();
         assertFalse(status.binderSkillsPairMatch);
         assertFalse(status.battleFactoryDependenciesMatch);
+        assertFalse(blank.isFullyWired());
+    }
+
+    function testDiagnosticsDetectMissingGraveyard() public {
+        BinderData unconfiguredData = new BinderData(address(this), "");
+        CentralConsole blank = new CentralConsole(address(this), address(unconfiguredData));
+        assertFalse(blank.getWiringStatus().graveyardConfigured);
         assertFalse(blank.isFullyWired());
     }
 }

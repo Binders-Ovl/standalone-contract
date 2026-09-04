@@ -148,6 +148,30 @@ contract BattleFactoryProxyTest is Test {
         factory.acceptBattleInvitation(passiveInvitation, _party(2, 2));
     }
 
+    function testUnwalkableSpawnTileIsRejected() public {
+        binderStructs.MapDefinition memory blockedMap = realms.getMap(7);
+        blockedMap.version = 2;
+        binderStructs.TileDefinition[] memory tiles = new binderStructs.TileDefinition[](6);
+        for (uint16 tileId = 1; tileId <= 6; ++tileId) {
+            tiles[tileId - 1] = binderStructs.TileDefinition({
+                tileId: tileId,
+                elevation: 0,
+                terrainTypeId: 1,
+                terrainFlags: 0,
+                walkable: tileId != 1,
+                movementCost: 1
+            });
+        }
+        realms.updateMapVersion(blockedMap, tiles);
+
+        uint256 invitationId = _createInvitation(1);
+        vm.prank(BOB);
+        vm.expectRevert(abi.encodeWithSelector(BattleProxy.UnwalkableSpawnTile.selector, uint16(1)));
+        factory.acceptBattleInvitation(invitationId, _party(2, 2));
+        assertEq(binderData.ownerOf(1), ALICE);
+        assertEq(binderData.ownerOf(2), BOB);
+    }
+
     function testRefereeRejectsWrongControllerUnselectedArtAndOutOfRangeIntent() public {
         // Tile 1 to tile 6 is Manhattan distance 3; the snapshot Art range is 1.
         BattleProxy battle = _createBattleAt(1, 6);

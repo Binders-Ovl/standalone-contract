@@ -54,6 +54,15 @@ contract ScaleOfBalanceClassCreationTest is Test {
         book0fLife.addNewClass(2, "Invalid Capacity", 1, invalidCapacity, 1);
     }
 
+    function testFusionStatCapacityAllowsBoundariesAndRejects255() public {
+        book0fLife.addNewClass(1, "Zero", 1, _fusionCapacityConfig(0), 1);
+        book0fLife.addNewClass(2, "One", 1, _fusionCapacityConfig(1), 1);
+        book0fLife.addNewClass(3, "Max", 1, _fusionCapacityConfig(254), 1);
+
+        vm.expectRevert(bytes("Fusion stat capacity exceeds 254"));
+        book0fLife.addNewClass(4, "Too Large", 1, _fusionCapacityConfig(255), 1);
+    }
+
     function testConsoleScaleCutoverMovesBothTargetRolesAndLeavesConsoleConfigured() public {
         centralConsole = new CentralConsole(address(this), address(binderData));
         binderData.grantRole(binderData.CONFIG_ROLE(), address(centralConsole));
@@ -106,6 +115,17 @@ contract ScaleOfBalanceClassCreationTest is Test {
             totalPoints: 20,
             hpPerVit: 10,
             mpPerWis: 5
+        });
+    }
+
+    function _fusionCapacityConfig(uint8 maxAdd) internal pure returns (binderStructs.ClassConfig memory config) {
+        uint8[8] memory maximums = [maxAdd, maxAdd, maxAdd, maxAdd, maxAdd, maxAdd, maxAdd, maxAdd];
+        config = binderStructs.ClassConfig({
+            minStats: [uint8(0), 0, 0, 0, 0, 0, 0, 0],
+            maxStats: maximums,
+            totalPoints: 0,
+            hpPerVit: 1,
+            mpPerWis: 1
         });
     }
 }

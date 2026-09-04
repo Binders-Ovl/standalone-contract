@@ -11,4 +11,6 @@ interface IBinderLogic {
     function setBook0fLife(address book) external;
     function setAllegianceRegistry(address registry) external;
     function setAcceptingRequests(bool accepting) external;
+    function CONFIG_ROLE() external view returns (bytes32);
+    function hasRole(bytes32 role, address account) external view returns (bool);
 }

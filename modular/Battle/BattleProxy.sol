@@ -110,6 +110,7 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
     error InvalidBattleInput();
     error DuplicateBattleToken(uint256 tokenId);
     error DuplicateSpawnTile(uint16 tileId);
+    error UnwalkableSpawnTile(uint16 tileId);
     error UnauthorizedBattleActor(uint256 tokenId, address caller);
     error BattleUnitNotAlive(uint256 tokenId);
     error ArtNotSelected(uint256 tokenId, uint32 artId);
@@ -398,6 +399,7 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         }
         // Confirms map bounds before state is persisted; terrain and occupancy are separate checks.
         GridMathLib.internalCoordinates(spawnTileId, mapWidth, tileCount);
+        if (!book0fRealms.isWalkable(mapId, mapVersion, spawnTileId)) revert UnwalkableSpawnTile(spawnTileId);
 
         binderStructs.NFTMetadata memory metadata = binderData.getNFTDetails(tokenId);
         _units[tokenId] = BattleUnit({

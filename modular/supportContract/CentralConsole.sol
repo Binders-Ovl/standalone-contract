@@ -254,6 +254,9 @@ contract CentralConsole is AccessControl, ICentralConsole {
         {
             revert CanonicalPairMismatch(allegianceRegistry, IBinderLogic(moduleAddress).allegianceRegistry());
         }
+        if (!IBinderLogic(moduleAddress).hasRole(IBinderLogic(moduleAddress).CONFIG_ROLE(), address(this))) {
+            revert CanonicalPairMismatch(address(this), address(0));
+        }
         address previousModule = binderLogic;
         if (previousModule != address(0) && previousModule != moduleAddress) {
             IBinderLogic(previousModule).setAcceptingRequests(false);
@@ -414,7 +417,10 @@ contract CentralConsole is AccessControl, ICentralConsole {
 
     /// @notice Registers and activates the canonical controller for a future activity type.
     function setActivityModule(uint8 activityId, address moduleAddress) external override onlyRole(CONFIG_ROLE) {
-        if (activityId == BinderIds.ACTIVITY_IDLE) revert InvalidActivityModuleId(activityId);
+        if (
+            activityId == BinderIds.ACTIVITY_IDLE || activityId == BinderIds.ACTIVITY_BATTLE
+                || activityId == BinderIds.ACTIVITY_FUSION
+        ) revert InvalidActivityModuleId(activityId);
         _requireContract(bytes32(uint256(activityId)), moduleAddress);
 
         address previousModule = activityModule[activityId];
@@ -464,6 +470,7 @@ contract CentralConsole is AccessControl, ICentralConsole {
             binderMetadata: binderMetadata,
             book0fLife: book0fLife,
             book0fArts: book0fArts,
+            book0fRealms: book0fRealms,
             binderLogic: binderLogic,
             fusionMinter: fusionMinter,
             scaleOfBalance: scaleOfBalance,

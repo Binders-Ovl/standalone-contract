@@ -43,6 +43,7 @@ contract DeployAndWire is Script {
         vm.startBroadcast(deployerKey);
         deployment = _deployAndWire(
             deployer,
+            vm.envAddress("BINDER_GRAVEYARD"),
             vm.envAddress("ENTROPY_ADDRESS"),
             vm.envAddress("ENTROPY_PROVIDER"),
             vm.envOr("BASE_IMAGE_URI", string(""))
@@ -50,18 +51,25 @@ contract DeployAndWire is Script {
         vm.stopBroadcast();
     }
 
-    function _deployAndWire(address deployer, address entropy, address entropyProvider, string memory baseImageURI)
-        internal
-        returns (Deployment memory deployment)
-    {
-        _deployBase(deployment, deployer, baseImageURI);
+    function _deployAndWire(
+        address deployer,
+        address graveyard,
+        address entropy,
+        address entropyProvider,
+        string memory baseImageURI
+    ) internal returns (Deployment memory deployment) {
+        _deployBase(deployment, deployer, graveyard, baseImageURI);
         _configureInitialGameData(deployment);
         _deployModules(deployment, deployer, entropy, entropyProvider);
         _wire(deployment, deployer);
     }
 
-    function _deployBase(Deployment memory deployment, address deployer, string memory baseImageURI) internal {
-        deployment.binderData = address(new BinderData(deployer, baseImageURI));
+    function _deployBase(Deployment memory deployment, address deployer, address graveyard, string memory baseImageURI)
+        internal
+    {
+        BinderData binderData = new BinderData(deployer, baseImageURI);
+        binderData.setGraveyard(graveyard);
+        deployment.binderData = address(binderData);
         deployment.centralConsole = address(new CentralConsole(deployer, deployment.binderData));
         deployment.allegianceRegistry = address(new AllegianceRegistry(deployer));
         deployment.book0fLife = address(new Book0fLife());

@@ -14,6 +14,7 @@ contract WiringDiagnostics {
         address binderMetadata;
         address book0fLife;
         address book0fArts;
+        address book0fRealms;
         address binderLogic;
         address fusionMinter;
         address scaleOfBalance;
@@ -23,12 +24,14 @@ contract WiringDiagnostics {
     }
 
     bytes32 private constant CONFIG_ROLE = keccak256("CONFIG_ROLE");
+    bytes32 private constant METADATA_REFRESH_ROLE = keccak256("METADATA_REFRESH_ROLE");
     bytes4 private constant BINDER_DATA = bytes4(keccak256("binderData()"));
     bytes4 private constant CENTRAL_CONSOLE = bytes4(keccak256("centralConsole()"));
     bytes4 private constant BINDER_SKILLS = bytes4(keccak256("binderSkills()"));
     bytes4 private constant BOOK_LIFE = bytes4(keccak256("book0fLife()"));
     bytes4 private constant BOOK_ARTS = bytes4(keccak256("book0fArts()"));
     bytes4 private constant METADATA = bytes4(keccak256("binderMetadataAddress()"));
+    bytes4 private constant GRAVEYARD = bytes4(keccak256("binderGraveyard()"));
     bytes4 private constant BATTLE_IMPLEMENTATION = bytes4(keccak256("battleImplementation()"));
     bytes4 private constant AUTHORIZED_BATTLE = bytes4(keccak256("authorizedBattleFactory(address)"));
     bytes4 private constant AUTHORIZED_FUSION = bytes4(keccak256("authorizedFusionMinter(address)"));
@@ -48,10 +51,11 @@ contract WiringDiagnostics {
 
     function isFullyWired(ICentralConsole.WiringStatus memory status) external pure returns (bool) {
         return status.binderDataMetadataMatch && status.binderSkillsPairMatch && status.metadataDependenciesMatch
-            && status.bookLifeDependenciesMatch && status.battleFactoryMatch && status.battleFactoryDependenciesMatch
-            && status.battleActivityControllerMatch && status.fusionActivityControllerMatch
+            && status.metadataRefreshAuthorityMatch && status.bookLifeDependenciesMatch && status.book0fRealmsConfigured
+            && status.battleFactoryMatch && status.battleFactoryDependenciesMatch && status.battleActivityControllerMatch
+            && status.fusionDependenciesMatch && status.fusionActivityControllerMatch
             && status.binderLogicCanonicalAndAccepting && status.scaleDependenciesAndAuthorityMatch
-            && status.allegianceDependenciesMatch;
+            && status.allegianceDependenciesMatch && status.graveyardConfigured && status.consoleAuthorityMatch;
     }
 
     function _metadata(ICentralConsole.WiringStatus memory status, WiringInput calldata input) private view {
@@ -61,6 +65,7 @@ contract WiringDiagnostics {
             && _addressMatches(input.binderSkills, BINDER_DATA, input.binderData)
             && _addressMatches(input.binderSkills, CENTRAL_CONSOLE, input.console);
         status.metadataDependenciesMatch = _metadataDependenciesMatch(input);
+        status.metadataRefreshAuthorityMatch = _hasRole(input.binderData, METADATA_REFRESH_ROLE, input.binderSkills);
     }
 
     function _metadataDependenciesMatch(WiringInput calldata input) private view returns (bool) {
@@ -72,6 +77,7 @@ contract WiringDiagnostics {
     }
 
     function _bookLife(ICentralConsole.WiringStatus memory status, WiringInput calldata input) private view {
+        status.book0fRealmsConfigured = input.book0fRealms.code.length != 0;
         status.bookLifeDependenciesMatch = input.book0fLife != address(0)
             && _optionalAddress(input.fusionMinter, BOOK_LIFE, input.book0fLife)
             && _optionalAddress(input.scaleOfBalance, BOOK_LIFE, input.book0fLife)
@@ -90,6 +96,9 @@ contract WiringDiagnostics {
     }
 
     function _fusionAndLogic(ICentralConsole.WiringStatus memory status, WiringInput calldata input) private view {
+        status.fusionDependenciesMatch = input.fusionMinter != address(0)
+            && _addressMatches(input.fusionMinter, BINDER_DATA, input.binderData)
+            && _addressMatches(input.fusionMinter, BOOK_LIFE, input.book0fLife);
         status.fusionActivityControllerMatch = input.fusionMinter != address(0)
             && _boolAddress(input.binderData, AUTHORIZED_FUSION, input.fusionMinter)
             && _addressUint8(input.binderData, ACTIVITY_CONTROLLER, 2) == input.fusionMinter;
@@ -107,6 +116,10 @@ contract WiringDiagnostics {
         status.allegianceDependenciesMatch = input.allegianceRegistry != address(0)
             && _optionalAddress(input.book0fLife, ALLEGIANCE, input.allegianceRegistry)
             && _optionalAddress(input.binderLogic, ALLEGIANCE, input.allegianceRegistry);
+        (address graveyard, bool graveyardOk) = _address(input.binderData, GRAVEYARD);
+        status.graveyardConfigured = graveyardOk && graveyard != address(0);
+        status.consoleAuthorityMatch = _hasConfig(input.binderData, input.console)
+            && _hasConfig(input.book0fLife, input.console) && _hasConfig(input.binderLogic, input.console);
     }
 
     function _optionalAddress(address target, bytes4 selector, address expected) private view returns (bool) {
@@ -121,8 +134,12 @@ contract WiringDiagnostics {
     }
 
     function _hasConfig(address target, address account) private view returns (bool) {
+        return _hasRole(target, CONFIG_ROLE, account);
+    }
+
+    function _hasRole(address target, bytes32 role, address account) private view returns (bool) {
         if (target.code.length == 0) return false;
-        (bool ok, bytes memory data) = target.staticcall(abi.encodeWithSelector(HAS_ROLE, CONFIG_ROLE, account));
+        (bool ok, bytes memory data) = target.staticcall(abi.encodeWithSelector(HAS_ROLE, role, account));
         return ok && data.length >= 32 && abi.decode(data, (bool));
     }
 

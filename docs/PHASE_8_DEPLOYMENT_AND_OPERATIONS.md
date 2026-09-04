@@ -2,15 +2,15 @@
 
 ## Canonical bootstrap order
 
-1. Deploy permanent `BinderData` and `CentralConsole`, binding that exact
-   BinderData address in the Console constructor.
+1. Deploy permanent `BinderData`, configure the non-zero `BINDER_GRAVEYARD`,
+   then deploy `CentralConsole` bound to that exact BinderData address.
 2. Deploy the locked `BinderSkills` implementation and its ERC-1967 proxy;
    initialize the proxy with the Console's BinderData address, then register
    that proxy through `CentralConsole.setBinderSkills`.
 3. Deploy `Book0fLife`, `Book0fArts`, and `Book0fRealms`; configure and
    validate their initial records before publishing their addresses through
    CentralConsole.
-4. Deploy `BinderMetadata` from `supportContract/binderMetadata.sol` using the
+4. Deploy `BinderMetadata` from `supportContract/BinderMetadata.sol` using the
    canonical BinderData/Skills pair and the chosen Life/Arts Books. Register
    it with CentralConsole, then set it on BinderData with
    `BinderData.setBinderMetadata`.
@@ -75,12 +75,13 @@ Arts, and spawn positions; it cannot choose canonical module addresses.
 
 ## Validation
 
-The final Phase 8 gate ran:
+The final Fix-1b release gate ran:
 
 ```text
-forge clean
-forge build --force
-forge test -vvv
+forge fmt --check <active Solidity source, test, and script files>
+forge build --sizes
+forge test -vv
 ```
 
-Result: compilation succeeded and all 40 tests passed.
+Result: compilation succeeded and all 13 suites / 85 tests passed, including
+the 256-run vitals fuzz test.

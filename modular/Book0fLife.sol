@@ -844,7 +844,9 @@ contract Book0fLife is AccessControl {
         uint256 totalCapacity;
         for (uint256 i = 0; i < 8; ++i) {
             require(config.minStats[i] <= config.maxStats[i], "Invalid stat range");
-            totalCapacity += config.maxStats[i] - config.minStats[i];
+            uint256 statCapacity = uint256(config.maxStats[i]) - config.minStats[i];
+            require(statCapacity <= 254, "Fusion stat capacity exceeds 254");
+            totalCapacity += statCapacity;
         }
         require(config.totalPoints <= totalCapacity, "Points exceed stat capacity");
         require(uint256(config.maxStats[4]) * config.hpPerVit <= type(uint16).max, "HP exceeds uint16");
