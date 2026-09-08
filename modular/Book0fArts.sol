@@ -10,6 +10,7 @@ import "./interfaces/IBook0fArts.sol";
 /// @notice Canonical, versioned Art/Skill definitions; it never owns learned skills.
 contract Book0fArts is AccessControl, IBook0fArts {
     bytes32 public constant CONFIG_ROLE = keccak256("CONFIG_ROLE");
+    bytes32 public constant BALANCE_ROLE = keccak256("BALANCE_ROLE");
 
     mapping(uint32 => bool) private _artExists;
     mapping(uint32 => uint16) private _currentVersion;
@@ -29,6 +30,8 @@ contract Book0fArts is AccessControl, IBook0fArts {
     error InvalidArtVersion(uint16 version);
     error InvalidArtDefinition();
     error DuplicateEligibleClass(uint32 artId, uint16 version, uint256 classId);
+    error NonBalanceArtFieldUpdate(uint32 artId);
+    error NoArtBalanceChange(uint32 artId);
 
     constructor(address initialAdmin) {
         if (initialAdmin == address(0)) revert InvalidModuleAddress(BinderIds.MODULE_BOOK_OF_ARTS, initialAdmin);
@@ -66,6 +69,43 @@ contract Book0fArts is AccessControl, IBook0fArts {
         definition.enabled = enabled;
         definition.version = newVersion;
         _storeVersionMemory(definition, eligibility);
+    }
+
+    /// @notice Gives ScaleOfBalance only the balance-update surface, never CONFIG_ROLE.
+    /// @dev Passing zero retires `previousScale` after a replacement is live.
+    function setScaleOfBalanceAuthority(address previousScale, address newScale) external onlyRole(CONFIG_ROLE) {
+        if (newScale != address(0)) {
+            if (newScale.code.length == 0) revert InvalidModuleAddress(BinderIds.MODULE_SCALE_OF_BALANCE, newScale);
+            _grantRole(BALANCE_ROLE, newScale);
+        }
+        if (previousScale != address(0) && previousScale != newScale) _revokeRole(BALANCE_ROLE, previousScale);
+    }
+
+    /// @notice Stores a new Art snapshot while preserving Art identity and rule type.
+    function updateArtBalance(binderStructs.ArtDefinition calldata definition, uint256[] calldata eligibleClassIds)
+        external
+        onlyRole(BALANCE_ROLE)
+    {
+        _requireArt(definition.artId);
+        binderStructs.ArtDefinition memory current = _definitions[definition.artId][_currentVersion[definition.artId]];
+        if (
+            keccak256(bytes(definition.name)) != keccak256(bytes(current.name))
+                || definition.artTypeId != current.artTypeId || definition.effectTypeId != current.effectTypeId
+                || definition.patternTypeId != current.patternTypeId
+        ) revert NonBalanceArtFieldUpdate(definition.artId);
+
+        if (
+            _sameBalanceDefinition(definition, current)
+                && _sameEligibility(definition.artId, current.version, eligibleClassIds)
+        ) {
+            revert NoArtBalanceChange(definition.artId);
+        }
+        if (current.version == type(uint16).max) revert InvalidArtVersion(current.version);
+
+        binderStructs.ArtDefinition memory updated = definition;
+        updated.version = current.version + 1;
+        uint256[] memory eligibility = eligibleClassIds;
+        _storeVersionMemory(updated, eligibility);
     }
 
     /// @notice Chunk-safe migration import. Each item is an initial Art or a newer Art version.
@@ -266,6 +306,49 @@ contract Book0fArts is AccessControl, IBook0fArts {
                     || term.statId >= BinderIds.STAT_COUNT
             ) revert InvalidArtDefinition();
         }
+    }
+
+    function _sameBalanceDefinition(
+        binderStructs.ArtDefinition calldata candidate,
+        binderStructs.ArtDefinition memory current
+    ) internal pure returns (bool) {
+        return candidate.hpCost == current.hpCost && candidate.mpCost == current.mpCost
+            && candidate.range == current.range && candidate.requirementFlags == current.requirementFlags
+            && candidate.ailmentId == current.ailmentId && candidate.enabled == current.enabled
+            && _sameFormula(candidate.primaryFormula, current.primaryFormula)
+            && _sameFormula(candidate.secondaryFormula, current.secondaryFormula);
+    }
+
+    function _sameFormula(binderStructs.Formula calldata candidate, binderStructs.Formula memory current)
+        internal
+        pure
+        returns (bool)
+    {
+        if (
+            candidate.formulaTypeId != current.formulaTypeId || candidate.termCount != current.termCount
+                || candidate.flatValue != current.flatValue
+        ) return false;
+        for (uint256 i; i < BinderIds.MAX_FORMULA_TERMS; ++i) {
+            binderStructs.FormulaTerm calldata candidateTerm = candidate.terms[i];
+            binderStructs.FormulaTerm memory currentTerm = current.terms[i];
+            if (
+                candidateTerm.sourceId != currentTerm.sourceId || candidateTerm.statId != currentTerm.statId
+                    || candidateTerm.coefficientBps != currentTerm.coefficientBps
+            ) return false;
+        }
+        return true;
+    }
+
+    function _sameEligibility(uint32 artId, uint16 version, uint256[] calldata eligibility)
+        internal
+        view
+        returns (bool)
+    {
+        if (eligibility.length != _eligibleClassIds[artId][version].length) return false;
+        for (uint256 i; i < eligibility.length; ++i) {
+            if (!_classEligible[artId][version][eligibility[i]]) return false;
+        }
+        return true;
     }
 
     function _pageVersions(uint16[] storage source, uint256 offset, uint256 limit)

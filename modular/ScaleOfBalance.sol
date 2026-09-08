@@ -5,11 +5,15 @@ import "./supportContract/binderStructs.sol";
 import "@openzeppelin/contracts-4.8/access/AccessControl.sol";
 import "./interfaces/IBinderData.sol";
 import "./interfaces/IBook0fLife.sol";
+import "./interfaces/IBook0fArts.sol";
+import "./interfaces/IBook0fRealms.sol";
 
 contract ScaleOfBalance is AccessControl {
     bytes32 public constant CONFIG_ROLE = keccak256("CONFIG_ROLE");
     IBinderData public binderData;
     IBook0fLife public book0fLife;
+    IBook0fArts public book0fArts;
+    IBook0fRealms public book0fRealms;
 
     // Events
     event logClassConfigUpdated(
@@ -24,6 +28,8 @@ contract ScaleOfBalance is AccessControl {
     event upgradeSuccesful(address indexed user, uint256 indexed tokenId);
     event upgradeFailed(address indexed user, uint256 indexed tokenId, string reason);
     event Book0fLifeUpdated(address indexed book);
+    event Book0fArtsUpdated(address indexed book);
+    event Book0fRealmsUpdated(address indexed book);
 
     constructor(address _binderData, address _book0fLife) {
         binderData = IBinderData(_binderData);
@@ -38,6 +44,34 @@ contract ScaleOfBalance is AccessControl {
         require(newBook != address(0) && newBook.code.length != 0, "Invalid book");
         book0fLife = IBook0fLife(newBook);
         emit Book0fLifeUpdated(newBook);
+    }
+
+    function setBook0fArts(address newBook) external onlyRole(CONFIG_ROLE) {
+        require(newBook != address(0) && newBook.code.length != 0, "Invalid book");
+        book0fArts = IBook0fArts(newBook);
+        emit Book0fArtsUpdated(newBook);
+    }
+
+    function setBook0fRealms(address newBook) external onlyRole(CONFIG_ROLE) {
+        require(newBook != address(0) && newBook.code.length != 0, "Invalid book");
+        book0fRealms = IBook0fRealms(newBook);
+        emit Book0fRealmsUpdated(newBook);
+    }
+
+    function updateArtBalance(binderStructs.ArtDefinition calldata definition, uint256[] calldata eligibleClassIds)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        require(address(book0fArts) != address(0), "Book not configured");
+        book0fArts.updateArtBalance(definition, eligibleClassIds);
+    }
+
+    function updateMapBalance(uint32 mapId, bool enabled, binderStructs.TileDefinition[] calldata tiles)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        require(address(book0fRealms) != address(0), "Book not configured");
+        book0fRealms.updateMapBalance(mapId, enabled, tiles);
     }
 
     // 1. Upgrade NFT By user

@@ -5,6 +5,9 @@ import "../supportContract/binderStructs.sol";
 
 /// @notice Read API for versioned map and tile definitions used by battle modules.
 interface IBook0fRealms {
+    function BALANCE_ROLE() external view returns (bytes32);
+    function setScaleOfBalanceAuthority(address previousScale, address newScale) external;
+    function updateMapBalance(uint32 mapId, bool enabled, binderStructs.TileDefinition[] calldata tiles) external;
     function getMapCount() external view returns (uint256);
     function getMapIdAt(uint256 index) external view returns (uint32);
     function getMapIds(uint256 offset, uint256 limit) external view returns (uint32[] memory);

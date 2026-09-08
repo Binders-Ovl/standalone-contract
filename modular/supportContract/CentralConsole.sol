@@ -9,10 +9,13 @@ import "../interfaces/IBinderMetadata.sol";
 import "../interfaces/IBinderSkills.sol";
 import "../interfaces/IBinderData.sol";
 import "../interfaces/IBook0fLife.sol";
+import "../interfaces/IBook0fArts.sol";
+import "../interfaces/IBook0fRealms.sol";
 import "../interfaces/IFusionMinter.sol";
 import "../interfaces/IBinderLogic.sol";
 import "../interfaces/IScaleOfBalance.sol";
 import "../interfaces/IBattleFactory.sol";
+import "@openzeppelin/contracts-4.8/access/IAccessControl.sol";
 import "./WiringDiagnostics.sol";
 
 /// @notice Canonical Binders module registry and configuration control plane.
@@ -174,6 +177,7 @@ contract CentralConsole is AccessControl, ICentralConsole {
         if (binderMetadata != address(0) && IBinderMetadata(binderMetadata).book0fArts() != moduleAddress) {
             revert CanonicalPairMismatch(moduleAddress, IBinderMetadata(binderMetadata).book0fArts());
         }
+        _wireReplacementBook0fArts(moduleAddress);
         _setModule(BinderIds.MODULE_BOOK_OF_ARTS, book0fArts, moduleAddress);
         book0fArts = moduleAddress;
     }
@@ -228,6 +232,7 @@ contract CentralConsole is AccessControl, ICentralConsole {
 
         address oldBook = book0fArts;
         address oldMetadata = binderMetadata;
+        _wireReplacementBook0fArts(newBook);
         book0fArts = newBook;
         binderMetadata = compatibleMetadata;
         emit CanonicalModuleUpdated(BinderIds.MODULE_BOOK_OF_ARTS, oldBook, newBook);
@@ -238,6 +243,7 @@ contract CentralConsole is AccessControl, ICentralConsole {
     }
 
     function setBook0fRealms(address moduleAddress) external override onlyRole(CONFIG_ROLE) {
+        _wireReplacementBook0fRealms(moduleAddress);
         _setModule(BinderIds.MODULE_BOOK_OF_REALMS, book0fRealms, moduleAddress);
         book0fRealms = moduleAddress;
     }
@@ -350,6 +356,8 @@ contract CentralConsole is AccessControl, ICentralConsole {
         IBinderData data = IBinderData(binderData);
         IBook0fLife life = IBook0fLife(book0fLife);
         address previousScale = scaleOfBalance;
+        _configureScaleTargets(moduleAddress);
+        _setScaleBalanceAuthorities(previousScale, moduleAddress);
         data.setScaleOfBalanceAuthority(previousScale, moduleAddress);
         life.setScaleOfBalanceAuthority(previousScale, moduleAddress);
         _setModule(BinderIds.MODULE_SCALE_OF_BALANCE, previousScale, moduleAddress);
@@ -361,6 +369,69 @@ contract CentralConsole is AccessControl, ICentralConsole {
                         && (data.hasRole(data.CONFIG_ROLE(), previousScale) || life.hasRole(life.CONFIG_ROLE(), previousScale))
                 )
         ) revert CanonicalPairMismatch(moduleAddress, address(0));
+    }
+
+    function _configureScaleTargets(address scale) private {
+        if (book0fArts != address(0) && IScaleOfBalance(scale).book0fArts() != book0fArts) {
+            _requireScaleConfigAuthority(scale);
+            IScaleOfBalance(scale).setBook0fArts(book0fArts);
+        }
+        if (book0fRealms != address(0) && IScaleOfBalance(scale).book0fRealms() != book0fRealms) {
+            _requireScaleConfigAuthority(scale);
+            IScaleOfBalance(scale).setBook0fRealms(book0fRealms);
+        }
+    }
+
+    function _wireReplacementBook0fArts(address newBook) private {
+        address activeScale = scaleOfBalance;
+        if (activeScale == address(0)) return;
+
+        if (IScaleOfBalance(activeScale).book0fArts() != newBook) {
+            _requireScaleConfigAuthority(activeScale);
+            IScaleOfBalance(activeScale).setBook0fArts(newBook);
+        }
+        IBook0fArts(newBook).setScaleOfBalanceAuthority(address(0), activeScale);
+        if (book0fArts != address(0) && book0fArts != newBook) {
+            IBook0fArts(book0fArts).setScaleOfBalanceAuthority(activeScale, address(0));
+        }
+        _requireBalanceAuthority(newBook, activeScale, IBook0fArts(newBook).BALANCE_ROLE());
+    }
+
+    function _wireReplacementBook0fRealms(address newBook) private {
+        _requireContract(BinderIds.MODULE_BOOK_OF_REALMS, newBook);
+        address activeScale = scaleOfBalance;
+        if (activeScale == address(0)) return;
+
+        if (IScaleOfBalance(activeScale).book0fRealms() != newBook) {
+            _requireScaleConfigAuthority(activeScale);
+            IScaleOfBalance(activeScale).setBook0fRealms(newBook);
+        }
+        IBook0fRealms(newBook).setScaleOfBalanceAuthority(address(0), activeScale);
+        if (book0fRealms != address(0) && book0fRealms != newBook) {
+            IBook0fRealms(book0fRealms).setScaleOfBalanceAuthority(activeScale, address(0));
+        }
+        _requireBalanceAuthority(newBook, activeScale, IBook0fRealms(newBook).BALANCE_ROLE());
+    }
+
+    function _setScaleBalanceAuthorities(address previousScale, address newScale) private {
+        if (book0fArts != address(0)) {
+            IBook0fArts(book0fArts).setScaleOfBalanceAuthority(previousScale, newScale);
+            _requireBalanceAuthority(book0fArts, newScale, IBook0fArts(book0fArts).BALANCE_ROLE());
+        }
+        if (book0fRealms != address(0)) {
+            IBook0fRealms(book0fRealms).setScaleOfBalanceAuthority(previousScale, newScale);
+            _requireBalanceAuthority(book0fRealms, newScale, IBook0fRealms(book0fRealms).BALANCE_ROLE());
+        }
+    }
+
+    function _requireScaleConfigAuthority(address scale) private view {
+        if (!IAccessControl(scale).hasRole(IScaleOfBalance(scale).CONFIG_ROLE(), address(this))) {
+            revert CanonicalPairMismatch(address(this), address(0));
+        }
+    }
+
+    function _requireBalanceAuthority(address book, address scale, bytes32 balanceRole) private view {
+        if (!IAccessControl(book).hasRole(balanceRole, scale)) revert CanonicalPairMismatch(scale, address(0));
     }
 
     function setBattleFactory(address moduleAddress, uint32 implementationVersion)

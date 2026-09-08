@@ -131,12 +131,18 @@ contract DeployAndWire is Script {
     function _wire(Deployment memory deployment, address deployer) internal {
         BinderData binderData = BinderData(deployment.binderData);
         Book0fLife book0fLife = Book0fLife(deployment.book0fLife);
+        Book0fArts book0fArts = Book0fArts(deployment.book0fArts);
+        Book0fRealms book0fRealms = Book0fRealms(deployment.book0fRealms);
         BinderLogic binderLogic = BinderLogic(deployment.binderLogic);
+        ScaleOfBalance scaleOfBalance = ScaleOfBalance(deployment.scaleOfBalance);
         CentralConsole centralConsole = CentralConsole(deployment.centralConsole);
 
         binderData.grantRole(binderData.CONFIG_ROLE(), deployment.centralConsole);
         book0fLife.grantRole(book0fLife.CONFIG_ROLE(), deployment.centralConsole);
+        book0fArts.grantRole(book0fArts.CONFIG_ROLE(), deployment.centralConsole);
+        book0fRealms.grantRole(book0fRealms.CONFIG_ROLE(), deployment.centralConsole);
         binderLogic.grantRole(binderLogic.CONFIG_ROLE(), deployment.centralConsole);
+        scaleOfBalance.grantRole(scaleOfBalance.CONFIG_ROLE(), deployment.centralConsole);
 
         centralConsole.setBook0fLife(deployment.book0fLife);
         centralConsole.setBook0fArts(deployment.book0fArts);

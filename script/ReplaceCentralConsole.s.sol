@@ -6,6 +6,8 @@ import "../modular/BinderData.sol";
 import "../modular/BinderLogic.sol";
 import "../modular/BinderSkills.sol";
 import "../modular/Book0fLife.sol";
+import "../modular/Book0fArts.sol";
+import "../modular/Book0fRealms.sol";
 import "../modular/Battle/BattleFactory.sol";
 import "../modular/Battle/BattleProxy.sol";
 import "../modular/FusionMinter.sol";
@@ -56,13 +58,9 @@ contract ReplaceCentralConsole is Script {
         internal
         returns (address newConsoleAddress, address newBattleFactoryAddress)
     {
-        BinderData binderData = BinderData(input.binderData);
-        Book0fLife life = Book0fLife(input.book0fLife);
-        BinderLogic logic = BinderLogic(input.binderLogic);
-        BinderSkills skills = BinderSkills(input.binderSkills);
         CentralConsole newConsole = new CentralConsole(deployer, input.binderData);
 
-        _stagePermissions(binderData, life, logic, skills, newConsole);
+        _stagePermissions(input, newConsole);
         _registerModules(newConsole, input);
 
         BattleProxy implementation = new BattleProxy();
@@ -70,21 +68,25 @@ contract ReplaceCentralConsole is Script {
         newConsole.setBattleFactory(address(factory), input.nextBattleFactoryVersion);
         require(newConsole.isFullyWired(), "Incomplete replacement wiring");
 
-        _revokeOldControlPlane(binderData, life, logic, CentralConsole(input.oldConsole), deployer);
+        _revokeOldControlPlane(input, deployer);
         return (address(newConsole), address(factory));
     }
 
-    function _stagePermissions(
-        BinderData binderData,
-        Book0fLife life,
-        BinderLogic logic,
-        BinderSkills skills,
-        CentralConsole newConsole
-    ) internal {
+    function _stagePermissions(ReplacementInput memory input, CentralConsole newConsole) internal {
+        BinderData binderData = BinderData(input.binderData);
+        Book0fLife life = Book0fLife(input.book0fLife);
+        Book0fArts arts = Book0fArts(input.book0fArts);
+        Book0fRealms realms = Book0fRealms(input.book0fRealms);
+        BinderLogic logic = BinderLogic(input.binderLogic);
+        BinderSkills skills = BinderSkills(input.binderSkills);
+        ScaleOfBalance scale = ScaleOfBalance(input.scaleOfBalance);
         binderData.grantRole(binderData.CONFIG_ROLE(), address(newConsole));
         life.grantRole(life.CONFIG_ROLE(), address(newConsole));
+        arts.grantRole(arts.CONFIG_ROLE(), address(newConsole));
+        realms.grantRole(realms.CONFIG_ROLE(), address(newConsole));
         logic.grantRole(logic.CONFIG_ROLE(), address(newConsole));
         skills.grantRole(skills.DEFAULT_ADMIN_ROLE(), address(newConsole));
+        scale.grantRole(scale.CONFIG_ROLE(), address(newConsole));
     }
 
     function _registerModules(CentralConsole newConsole, ReplacementInput memory input) internal {
@@ -99,16 +101,20 @@ contract ReplaceCentralConsole is Script {
         newConsole.setScaleOfBalance(input.scaleOfBalance);
     }
 
-    function _revokeOldControlPlane(
-        BinderData binderData,
-        Book0fLife life,
-        BinderLogic logic,
-        CentralConsole oldConsole,
-        address deployer
-    ) internal {
+    function _revokeOldControlPlane(ReplacementInput memory input, address deployer) internal {
+        BinderData binderData = BinderData(input.binderData);
+        Book0fLife life = Book0fLife(input.book0fLife);
+        Book0fArts arts = Book0fArts(input.book0fArts);
+        Book0fRealms realms = Book0fRealms(input.book0fRealms);
+        BinderLogic logic = BinderLogic(input.binderLogic);
+        ScaleOfBalance scale = ScaleOfBalance(input.scaleOfBalance);
+        CentralConsole oldConsole = CentralConsole(input.oldConsole);
         binderData.revokeRole(binderData.CONFIG_ROLE(), address(oldConsole));
         life.revokeRole(life.CONFIG_ROLE(), address(oldConsole));
+        arts.revokeRole(arts.CONFIG_ROLE(), address(oldConsole));
+        realms.revokeRole(realms.CONFIG_ROLE(), address(oldConsole));
         logic.revokeRole(logic.CONFIG_ROLE(), address(oldConsole));
+        scale.revokeRole(scale.CONFIG_ROLE(), address(oldConsole));
         oldConsole.revokeRole(oldConsole.CONFIG_ROLE(), deployer);
     }
 }

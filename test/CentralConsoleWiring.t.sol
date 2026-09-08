@@ -48,6 +48,8 @@ contract CentralConsoleWiringTest is Test {
         arts = new Book0fArts(address(this));
         realms = new Book0fRealms(address(this));
         life.grantRole(life.CONFIG_ROLE(), address(centralConsole));
+        arts.grantRole(arts.CONFIG_ROLE(), address(centralConsole));
+        realms.grantRole(realms.CONFIG_ROLE(), address(centralConsole));
 
         BinderSkills skillsImplementation = new BinderSkills();
         ERC1967Proxy skillsProxy = new ERC1967Proxy(
@@ -63,6 +65,7 @@ contract CentralConsoleWiringTest is Test {
         logic.grantRole(logic.CONFIG_ROLE(), address(centralConsole));
         fusion = new FusionMinter(address(binderData), address(life), address(entropy), address(0xBEEF), address(this));
         scale = new ScaleOfBalance(address(binderData), address(life));
+        scale.grantRole(scale.CONFIG_ROLE(), address(centralConsole));
         BattleProxy implementation = new BattleProxy();
         battleFactory = new BattleFactory(address(this), address(centralConsole), address(implementation));
 
@@ -93,6 +96,7 @@ contract CentralConsoleWiringTest is Test {
         assertTrue(status.fusionActivityControllerMatch);
         assertTrue(status.binderLogicCanonicalAndAccepting);
         assertTrue(status.scaleDependenciesAndAuthorityMatch);
+        assertTrue(status.scaleBalanceAuthorityMatch);
         assertTrue(status.allegianceDependenciesMatch);
         assertTrue(status.graveyardConfigured);
         assertTrue(status.consoleAuthorityMatch);
@@ -103,8 +107,11 @@ contract CentralConsoleWiringTest is Test {
         CentralConsole replacement = new CentralConsole(address(this), address(binderData));
         binderData.grantRole(binderData.CONFIG_ROLE(), address(replacement));
         life.grantRole(life.CONFIG_ROLE(), address(replacement));
+        arts.grantRole(arts.CONFIG_ROLE(), address(replacement));
+        realms.grantRole(realms.CONFIG_ROLE(), address(replacement));
         logic.grantRole(logic.CONFIG_ROLE(), address(replacement));
         skills.grantRole(skills.DEFAULT_ADMIN_ROLE(), address(replacement));
+        scale.grantRole(scale.CONFIG_ROLE(), address(replacement));
 
         replacement.setBook0fLife(address(life));
         replacement.setBook0fArts(address(arts));
@@ -124,7 +131,10 @@ contract CentralConsoleWiringTest is Test {
 
         binderData.revokeRole(binderData.CONFIG_ROLE(), address(centralConsole));
         life.revokeRole(life.CONFIG_ROLE(), address(centralConsole));
+        arts.revokeRole(arts.CONFIG_ROLE(), address(centralConsole));
+        realms.revokeRole(realms.CONFIG_ROLE(), address(centralConsole));
         logic.revokeRole(logic.CONFIG_ROLE(), address(centralConsole));
+        scale.revokeRole(scale.CONFIG_ROLE(), address(centralConsole));
         centralConsole.revokeRole(centralConsole.CONFIG_ROLE(), address(this));
         assertFalse(logic.hasRole(logic.CONFIG_ROLE(), address(centralConsole)));
         vm.expectRevert();

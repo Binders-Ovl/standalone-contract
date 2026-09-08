@@ -11,6 +11,7 @@ import "./interfaces/IBook0fRealms.sol";
 /// @dev Tile IDs are local to each map version and are intentionally bounded to uint16.
 contract Book0fRealms is AccessControl, IBook0fRealms {
     bytes32 public constant CONFIG_ROLE = keccak256("CONFIG_ROLE");
+    bytes32 public constant BALANCE_ROLE = keccak256("BALANCE_ROLE");
 
     mapping(uint32 => bool) private _mapExists;
     mapping(uint32 => uint16) private _currentVersion;
@@ -32,6 +33,8 @@ contract Book0fRealms is AccessControl, IBook0fRealms {
     error InvalidMapVersion(uint16 version);
     error InvalidMapDefinition();
     error InvalidTileDefinition(uint16 tileId);
+    error StructuralMapChange(uint32 mapId);
+    error NoMapBalanceChange(uint32 mapId);
 
     constructor(address initialAdmin) {
         if (initialAdmin == address(0)) revert InvalidModuleAddress(BinderIds.MODULE_BOOK_OF_REALMS, initialAdmin);
@@ -64,6 +67,59 @@ contract Book0fRealms is AccessControl, IBook0fRealms {
         _requireMap(mapId);
         _currentEnabled[mapId] = enabled;
         emit MapEnabledChanged(mapId, enabled);
+    }
+
+    /// @notice Gives ScaleOfBalance only the versioned battle-balance surface.
+    /// @dev Passing zero retires `previousScale` after a replacement is live.
+    function setScaleOfBalanceAuthority(address previousScale, address newScale) external onlyRole(CONFIG_ROLE) {
+        if (newScale != address(0)) {
+            if (newScale.code.length == 0) revert InvalidModuleAddress(BinderIds.MODULE_SCALE_OF_BALANCE, newScale);
+            _grantRole(BALANCE_ROLE, newScale);
+        }
+        if (previousScale != address(0) && previousScale != newScale) _revokeRole(BALANCE_ROLE, previousScale);
+    }
+
+    /// @notice Versions terrain rules without allowing map geometry or elevation edits.
+    function updateMapBalance(uint32 mapId, bool enabled, binderStructs.TileDefinition[] calldata tiles)
+        external
+        onlyRole(BALANCE_ROLE)
+    {
+        _requireMap(mapId);
+        uint16 currentVersion = _currentVersion[mapId];
+        binderStructs.MapDefinition memory current = _mapDefinitions[mapId][currentVersion];
+        uint256 tileCount = _tileCount(current);
+        if (tiles.length != tileCount) revert InvalidMapDefinition();
+
+        bool changed = enabled != _currentEnabled[mapId];
+        for (uint256 i; i < tileCount; ++i) {
+            uint16 tileId = uint16(i + 1);
+            binderStructs.TileDefinition calldata candidate = tiles[i];
+            binderStructs.TileDefinition storage previous = _tiles[mapId][currentVersion][tileId];
+            if (
+                candidate.tileId != tileId || candidate.elevation != previous.elevation
+                    || (candidate.walkable && candidate.movementCost == 0)
+            ) revert StructuralMapChange(mapId);
+            if (
+                candidate.terrainTypeId != previous.terrainTypeId || candidate.terrainFlags != previous.terrainFlags
+                    || candidate.walkable != previous.walkable || candidate.movementCost != previous.movementCost
+            ) changed = true;
+        }
+        if (!changed) revert NoMapBalanceChange(mapId);
+        if (currentVersion == type(uint16).max) revert InvalidMapVersion(currentVersion);
+
+        uint16 newVersion = currentVersion + 1;
+        _mapDefinitions[mapId][newVersion] = current;
+        _mapDefinitions[mapId][newVersion].version = newVersion;
+        _mapDefinitions[mapId][newVersion].enabled = enabled;
+        _versionExists[mapId][newVersion] = true;
+        _versions[mapId].push(newVersion);
+        _currentVersion[mapId] = newVersion;
+        _currentEnabled[mapId] = enabled;
+        for (uint256 i; i < tileCount; ++i) {
+            _tiles[mapId][newVersion][uint16(i + 1)] = tiles[i];
+        }
+
+        emit MapVersionConfigured(mapId, newVersion, enabled, current.width, current.height);
     }
 
     function setCastleMap(uint256 castleId, uint32 mapId) external onlyRole(CONFIG_ROLE) {

@@ -17,6 +17,7 @@ interface ICentralConsole {
         bool fusionActivityControllerMatch;
         bool binderLogicCanonicalAndAccepting;
         bool scaleDependenciesAndAuthorityMatch;
+        bool scaleBalanceAuthorityMatch;
         bool allegianceDependenciesMatch;
         bool graveyardConfigured;
         bool consoleAuthorityMatch;

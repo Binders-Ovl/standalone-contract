@@ -30,6 +30,7 @@ contract WiringDiagnostics {
     bytes4 private constant BINDER_SKILLS = bytes4(keccak256("binderSkills()"));
     bytes4 private constant BOOK_LIFE = bytes4(keccak256("book0fLife()"));
     bytes4 private constant BOOK_ARTS = bytes4(keccak256("book0fArts()"));
+    bytes4 private constant BOOK_REALMS = bytes4(keccak256("book0fRealms()"));
     bytes4 private constant METADATA = bytes4(keccak256("binderMetadataAddress()"));
     bytes4 private constant GRAVEYARD = bytes4(keccak256("binderGraveyard()"));
     bytes4 private constant BATTLE_IMPLEMENTATION = bytes4(keccak256("battleImplementation()"));
@@ -40,6 +41,7 @@ contract WiringDiagnostics {
     bytes4 private constant ACCEPTING_REQUESTS = bytes4(keccak256("acceptingRequests()"));
     bytes4 private constant ALLEGIANCE = bytes4(keccak256("allegianceRegistry()"));
     bytes4 private constant HAS_ROLE = bytes4(keccak256("hasRole(bytes32,address)"));
+    bytes4 private constant BALANCE_ROLE = bytes4(keccak256("BALANCE_ROLE()"));
 
     function collect(WiringInput calldata input) external view returns (ICentralConsole.WiringStatus memory status) {
         _metadata(status, input);
@@ -55,7 +57,8 @@ contract WiringDiagnostics {
             && status.battleFactoryMatch && status.battleFactoryDependenciesMatch && status.battleActivityControllerMatch
             && status.fusionDependenciesMatch && status.fusionActivityControllerMatch
             && status.binderLogicCanonicalAndAccepting && status.scaleDependenciesAndAuthorityMatch
-            && status.allegianceDependenciesMatch && status.graveyardConfigured && status.consoleAuthorityMatch;
+            && status.scaleBalanceAuthorityMatch && status.allegianceDependenciesMatch && status.graveyardConfigured
+            && status.consoleAuthorityMatch;
     }
 
     function _metadata(ICentralConsole.WiringStatus memory status, WiringInput calldata input) private view {
@@ -113,6 +116,7 @@ contract WiringDiagnostics {
         status.scaleDependenciesAndAuthorityMatch = input.scaleOfBalance != address(0) && scaleDataOk && scaleLifeOk
             && scaleData == input.binderData && scaleLife == input.book0fLife
             && _hasConfig(input.binderData, input.scaleOfBalance) && _hasConfig(input.book0fLife, input.scaleOfBalance);
+        status.scaleBalanceAuthorityMatch = _scaleBalanceAuthorityMatch(input);
         status.allegianceDependenciesMatch = input.allegianceRegistry != address(0)
             && _optionalAddress(input.book0fLife, ALLEGIANCE, input.allegianceRegistry)
             && _optionalAddress(input.binderLogic, ALLEGIANCE, input.allegianceRegistry);
@@ -120,6 +124,17 @@ contract WiringDiagnostics {
         status.graveyardConfigured = graveyardOk && graveyard != address(0);
         status.consoleAuthorityMatch = _hasConfig(input.binderData, input.console)
             && _hasConfig(input.book0fLife, input.console) && _hasConfig(input.binderLogic, input.console);
+    }
+
+    function _scaleBalanceAuthorityMatch(WiringInput calldata input) private view returns (bool) {
+        (address scaleArts, bool scaleArtsOk) = _address(input.scaleOfBalance, BOOK_ARTS);
+        (address scaleRealms, bool scaleRealmsOk) = _address(input.scaleOfBalance, BOOK_REALMS);
+        (bytes32 artsBalanceRole, bool artsRoleOk) = _bytes32(input.book0fArts, BALANCE_ROLE);
+        (bytes32 realmsBalanceRole, bool realmsRoleOk) = _bytes32(input.book0fRealms, BALANCE_ROLE);
+        return input.scaleOfBalance != address(0) && scaleArtsOk && scaleRealmsOk && artsRoleOk && realmsRoleOk
+            && scaleArts == input.book0fArts && scaleRealms == input.book0fRealms
+            && _hasRole(input.book0fArts, artsBalanceRole, input.scaleOfBalance)
+            && _hasRole(input.book0fRealms, realmsBalanceRole, input.scaleOfBalance);
     }
 
     function _optionalAddress(address target, bytes4 selector, address expected) private view returns (bool) {
@@ -141,6 +156,14 @@ contract WiringDiagnostics {
         if (target.code.length == 0) return false;
         (bool ok, bytes memory data) = target.staticcall(abi.encodeWithSelector(HAS_ROLE, role, account));
         return ok && data.length >= 32 && abi.decode(data, (bool));
+    }
+
+    function _bytes32(address target, bytes4 selector) private view returns (bytes32 value, bool ok) {
+        if (target.code.length == 0) return (bytes32(0), false);
+        bytes memory data;
+        (ok, data) = target.staticcall(abi.encodeWithSelector(selector));
+        if (data.length < 32) return (bytes32(0), false);
+        value = abi.decode(data, (bytes32));
     }
 
     function _boolAddress(address target, bytes4 selector, address argument) private view returns (bool) {
