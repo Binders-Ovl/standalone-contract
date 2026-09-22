@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 import "../modular/BinderData.sol";
-import "../modular/Book0fLife.sol";
+import "../modular/shelf/Book0fLife.sol";
 import "../modular/BinderLogic.sol";
 import "../modular/ScaleOfBalance.sol";
 import "../modular/AllegianceRegistry.sol";

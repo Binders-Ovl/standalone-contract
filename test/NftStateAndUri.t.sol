@@ -3,9 +3,9 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 import "../modular/BinderData.sol";
-import "../modular/Book0fLife.sol";
-import "../modular/Book0fArts.sol";
-import "../modular/scripts/InitializeGameData.sol";
+import "../modular/shelf/Book0fLife.sol";
+import "../modular/shelf/Book0fArts.sol";
+import "../initiate/InitializeUnits.sol";
 import "../modular/supportContract/binderStructs.sol";
 import "../modular/supportContract/BinderMetadata.sol";
 
@@ -369,7 +369,10 @@ contract NftStateAndUriTest is Test {
     }
 
     function testRuntimeRoleConfiguratorAssignsRolesOnTargetContracts() public {
-        InitializeGameData initializer = new InitializeGameData();
+        InitializeUnits initializer = new InitializeUnits();
+        vm.prank(address(0xBAD));
+        vm.expectRevert("Initializer operator only");
+        initializer.setup(address(book0fLife), address(binderData), address(0));
         address binderLogic = address(new MockActivityController(binderData));
         address fusionMinter = address(new MockActivityController(binderData));
         address scaleOfBalance = address(0x5CA1E);

@@ -7,13 +7,15 @@ import "./interfaces/IBinderData.sol";
 import "./interfaces/IBook0fLife.sol";
 import "./interfaces/IBook0fArts.sol";
 import "./interfaces/IBook0fRealms.sol";
+import "./supportContract/ItemBookConfigurator.sol";
 
-contract ScaleOfBalance is AccessControl {
+contract ScaleOfBalance is AccessControl, ItemBookConfigurator {
     bytes32 public constant CONFIG_ROLE = keccak256("CONFIG_ROLE");
     IBinderData public binderData;
     IBook0fLife public book0fLife;
     IBook0fArts public book0fArts;
     IBook0fRealms public book0fRealms;
+    IBook0fItems public book0fItems;
 
     // Events
     event logClassConfigUpdated(
@@ -30,6 +32,7 @@ contract ScaleOfBalance is AccessControl {
     event Book0fLifeUpdated(address indexed book);
     event Book0fArtsUpdated(address indexed book);
     event Book0fRealmsUpdated(address indexed book);
+    event Book0fItemsUpdated(address indexed book);
 
     constructor(address _binderData, address _book0fLife) {
         binderData = IBinderData(_binderData);
@@ -56,6 +59,17 @@ contract ScaleOfBalance is AccessControl {
         require(newBook != address(0) && newBook.code.length != 0, "Invalid book");
         book0fRealms = IBook0fRealms(newBook);
         emit Book0fRealmsUpdated(newBook);
+    }
+
+    function setBook0fItems(address newBook) external onlyRole(CONFIG_ROLE) {
+        require(newBook.code.length != 0, "Invalid book");
+        book0fItems = IBook0fItems(newBook);
+        emit Book0fItemsUpdated(newBook);
+    }
+
+    function _itemBookForConfig() internal view override onlyRole(DEFAULT_ADMIN_ROLE) returns (IBook0fItems) {
+        require(address(book0fItems) != address(0), "Book not configured");
+        return book0fItems;
     }
 
     function updateArtBalance(binderStructs.ArtDefinition calldata definition, uint256[] calldata eligibleClassIds)
@@ -168,13 +182,10 @@ contract ScaleOfBalance is AccessControl {
         require(classId != 0, "Invalid classId");
         require(book0fLife.classExists(classId), "Class does not exist");
 
+        uint256 totalDelta;
         for (uint8 s = 0; s < 8; s++) {
             require(newConfig.minStats[s] <= newConfig.maxStats[s], "Invalid stat range");
-        }
-
-        uint16 totalDelta;
-        for (uint8 d = 0; d < 8; d++) {
-            totalDelta += (newConfig.maxStats[d] - newConfig.minStats[d]);
+            totalDelta += newConfig.maxStats[s] - newConfig.minStats[s];
         }
         // Gating the possible Total point to be 2/3 max of Maximum all Stats
         require(newConfig.totalPoints < (totalDelta * 67) / 100, "totalPoints must be Lower than total delta");
@@ -212,13 +223,10 @@ contract ScaleOfBalance is AccessControl {
         require(classId != 0, "Invalid classId");
         require(!book0fLife.classExists(classId), "Class already exists");
 
+        uint256 totalDelta;
         for (uint8 s = 0; s < 8; s++) {
             require(config.maxStats[s] >= config.minStats[s], "maxStat must be >= minStat");
-        }
-
-        uint16 totalDelta;
-        for (uint8 d = 0; d < 8; d++) {
-            totalDelta += config.maxStats[d] - config.minStats[d];
+            totalDelta += config.maxStats[s] - config.minStats[s];
         }
         // Ensure the configuration provides meaningful stat distribution space by Gating the possible Total point to be 2/3 max of Maximum all Stats
         require(config.totalPoints <= (totalDelta * 67) / 100, "totalPoints must be Lower than sum of stat deltas");

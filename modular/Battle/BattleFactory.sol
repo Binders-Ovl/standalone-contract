@@ -215,11 +215,10 @@ contract BattleFactory is AccessControl, IBattleFactory {
         params.binderSkillsAddress = ICentralConsole(centralConsole).binderSkills();
         params.book0fArtsAddress = address(book0fArts);
         params.book0fRealmsAddress = address(book0fRealms);
+        params.inventoryAddress = ICentralConsole(centralConsole).binderInventory();
         params.requestedMapId = invitation.mapId;
         params.requestedMapVersion = map.version;
-        params.tokenIds = _combineTokenIds(challengerParty, opponentParty);
-        params.spawnTileIds = _combineSpawnTileIds(challengerParty, opponentParty);
-        params.selectedArtIds = _combineSelectedArtIds(challengerParty, opponentParty);
+        _combineParties(params, challengerParty, opponentParty);
         BattleProxy(clone).initialize(params);
 
         for (uint256 index; index < count; ++index) {
@@ -300,48 +299,22 @@ contract BattleFactory is AccessControl, IBattleFactory {
         }
     }
 
-    function _combineTokenIds(PartySubmission storage challengerParty, PartySubmission storage opponentParty)
-        internal
-        view
-        returns (uint256[] memory tokenIds)
-    {
+    function _combineParties(
+        BattleProxy.InitializationParams memory params,
+        PartySubmission storage challengerParty,
+        PartySubmission storage opponentParty
+    ) internal view {
         uint256 challengerCount = challengerParty.tokenIds.length;
-        tokenIds = new uint256[](challengerCount + opponentParty.tokenIds.length);
-        for (uint256 index; index < challengerCount; ++index) {
-            tokenIds[index] = challengerParty.tokenIds[index];
-        }
-        for (uint256 index; index < opponentParty.tokenIds.length; ++index) {
-            tokenIds[challengerCount + index] = opponentParty.tokenIds[index];
-        }
-    }
-
-    function _combineSpawnTileIds(PartySubmission storage challengerParty, PartySubmission storage opponentParty)
-        internal
-        view
-        returns (uint16[] memory spawnTileIds)
-    {
-        uint256 challengerCount = challengerParty.spawnTileIds.length;
-        spawnTileIds = new uint16[](challengerCount + opponentParty.spawnTileIds.length);
-        for (uint256 index; index < challengerCount; ++index) {
-            spawnTileIds[index] = challengerParty.spawnTileIds[index];
-        }
-        for (uint256 index; index < opponentParty.spawnTileIds.length; ++index) {
-            spawnTileIds[challengerCount + index] = opponentParty.spawnTileIds[index];
-        }
-    }
-
-    function _combineSelectedArtIds(PartySubmission storage challengerParty, PartySubmission storage opponentParty)
-        internal
-        view
-        returns (uint32[][] memory selectedArtIds)
-    {
-        uint256 challengerCount = challengerParty.selectedArtIds.length;
-        selectedArtIds = new uint32[][](challengerCount + opponentParty.selectedArtIds.length);
-        for (uint256 index; index < challengerCount; ++index) {
-            selectedArtIds[index] = challengerParty.selectedArtIds[index];
-        }
-        for (uint256 index; index < opponentParty.selectedArtIds.length; ++index) {
-            selectedArtIds[challengerCount + index] = opponentParty.selectedArtIds[index];
+        uint256 count = challengerCount + opponentParty.tokenIds.length;
+        params.tokenIds = new uint256[](count);
+        params.spawnTileIds = new uint16[](count);
+        params.selectedArtIds = new uint32[][](count);
+        for (uint256 index; index < count; ++index) {
+            PartySubmission storage party = index < challengerCount ? challengerParty : opponentParty;
+            uint256 sourceIndex = index < challengerCount ? index : index - challengerCount;
+            params.tokenIds[index] = party.tokenIds[sourceIndex];
+            params.spawnTileIds[index] = party.spawnTileIds[sourceIndex];
+            params.selectedArtIds[index] = party.selectedArtIds[sourceIndex];
         }
     }
 

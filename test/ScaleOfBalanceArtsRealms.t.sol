@@ -3,9 +3,9 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 import "../modular/BinderData.sol";
-import "../modular/Book0fArts.sol";
-import "../modular/Book0fLife.sol";
-import "../modular/Book0fRealms.sol";
+import "../modular/shelf/Book0fArts.sol";
+import "../modular/shelf/Book0fLife.sol";
+import "../modular/shelf/Book0fRealms.sol";
 import "../modular/ScaleOfBalance.sol";
 import "../modular/supportContract/binderStructs.sol";
 

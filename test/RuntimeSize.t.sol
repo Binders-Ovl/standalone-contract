@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import "forge-std/Test.sol";
 import "forge-std/console2.sol";
 import "../modular/BinderData.sol";
-import "../modular/Book0fLife.sol";
+import "../modular/shelf/Book0fLife.sol";
 import "../modular/Battle/BattleFactory.sol";
 import "../modular/Battle/BattleProxy.sol";
 import "../modular/FusionMinter.sol";

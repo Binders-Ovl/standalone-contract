@@ -71,4 +71,12 @@ library BinderIds {
     bytes32 internal constant MODULE_SCALE_OF_BALANCE = keccak256("BINDERS_MODULE_SCALE_OF_BALANCE");
     bytes32 internal constant MODULE_BATTLE_FACTORY = keccak256("BINDERS_MODULE_BATTLE_FACTORY");
     bytes32 internal constant MODULE_ALLEGIANCE_REGISTRY = keccak256("BINDERS_MODULE_ALLEGIANCE_REGISTRY");
+    bytes32 internal constant MODULE_BOOK_OF_ITEMS = keccak256("BINDERS_MODULE_BOOK_OF_ITEMS");
+    bytes32 internal constant MODULE_BINDER_INVENTORY = keccak256("BINDERS_MODULE_BINDER_INVENTORY");
+    bytes32 internal constant MODULE_EQUIPMENT = keccak256("BINDERS_MODULE_EQUIPMENT");
+    bytes32 internal constant MODULE_TOME_AND_GRIMOIRES = keccak256("BINDERS_MODULE_TOME_AND_GRIMOIRES");
+    bytes32 internal constant MODULE_SITEMS = keccak256("BINDERS_MODULE_SITEMS");
+    bytes32 internal constant MODULE_ITEM_USE_ROUTER = keccak256("BINDERS_MODULE_ITEM_USE_ROUTER");
+    bytes32 internal constant MODULE_ITEM_METADATA_BUILDER = keccak256("BINDERS_MODULE_ITEM_METADATA_BUILDER");
+    bytes32 internal constant MODULE_ITEM_STATS_VIEW = keccak256("BINDERS_MODULE_ITEM_STATS_VIEW");
 }

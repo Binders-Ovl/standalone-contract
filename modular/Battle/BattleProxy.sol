@@ -11,14 +11,15 @@ import "../interfaces/IBinderData.sol";
 import "../interfaces/IBinderSkills.sol";
 import "../interfaces/IBook0fArts.sol";
 import "../interfaces/IBook0fRealms.sol";
+import "../interfaces/IBinderInventory.sol";
 import "../libraries/ArtFormulaLib.sol";
 import "../libraries/GridMathLib.sol";
 import "../supportContract/binderStructs.sol";
+import "../Items/ItemStruct.sol";
 
 /// @notice Per-match clone holding authoritative, temporary Battle state.
-/// @dev This Phase 6 referee supports single/self Damage and Heal Arts. Its
-/// address and selected Art-version records are fixed at initialization, so a
-/// Book replacement or later Book edit cannot change an active match's rules.
+/// @dev Its address and selected Art-version records are fixed at initialization,
+/// so a Book replacement or later Book edit cannot change an active match's rules.
 contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
     struct InitializationParams {
         address factoryAddress;
@@ -26,6 +27,7 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         address binderSkillsAddress;
         address book0fArtsAddress;
         address book0fRealmsAddress;
+        address inventoryAddress;
         uint32 requestedMapId;
         uint16 requestedMapVersion;
         uint256[] tokenIds;
@@ -42,6 +44,9 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         uint16 currentMP;
         uint16 tileId;
         uint256 activeAilments;
+        int32[8] equipmentModifiers;
+        uint256[5] equipmentTokenIds;
+        uint32[5] equipmentConfigVersions;
         bool alive;
         bool guardActive;
     }
@@ -55,8 +60,15 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         uint16 currentMP;
         uint16 tileId;
         uint256 activeAilments;
+        int32[8] equipmentModifiers;
         bool alive;
         bool guardActive;
+    }
+
+    struct TimedStatModifier {
+        bytes32 key;
+        int32[8] delta;
+        uint64 expiresAt;
     }
 
     address public factory;
@@ -64,6 +76,7 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
     IBinderSkills public binderSkills;
     IBook0fArts public book0fArts;
     IBook0fRealms public book0fRealms;
+    IBinderInventory public binderInventory;
     uint32 public override mapId;
     uint16 public override mapVersion;
     uint16 public mapWidth;
@@ -78,6 +91,9 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
     mapping(uint256 => uint8) private _participantIndexPlusOne;
     mapping(uint256 => mapping(uint32 => bool)) private _selectedArts;
     mapping(uint32 => uint16) private _artVersions;
+    mapping(uint256 => TimedStatModifier[]) private _temporaryModifiers;
+    mapping(uint256 => mapping(bytes32 => uint16)) private _temporaryModifierIndex;
+    mapping(uint256 => mapping(uint8 => uint64)) private _ailmentExpiry;
 
     event BattleInitialized(
         address indexed factory,
@@ -100,6 +116,7 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         uint16 actorMPAfter,
         uint16 targetHPAfter
     );
+    event ItemUsed(uint32 indexed actionNumber, uint256 indexed actorTokenId, uint16 indexed sItemId, uint128 amount);
     event BattleCancelled(address indexed caller, uint256 participantCount);
     event BattleVitalsPulsed(uint32 indexed checkpointNonce, uint16 dirtyUnitBitmap, uint256 participantCount);
     event BattleSettled(uint32 indexed checkpointNonce, uint256 survivorCount);
@@ -115,6 +132,7 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
     error BattleUnitNotAlive(uint256 tokenId);
     error ArtNotSelected(uint256 tokenId, uint32 artId);
     error ArtNotLearned(uint256 tokenId, uint32 artId);
+    error BattleArtVersionStale(uint256 tokenId, uint32 artId, uint16 learnedVersion, uint16 currentVersion);
     error BattleArtUnavailable(uint32 artId);
     error BattleArtClassIneligible(uint256 tokenId, uint32 artId, uint256 classId, uint16 version);
     error UnsupportedBattleArtType(uint8 artTypeId);
@@ -125,6 +143,12 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
     error InsufficientBattleResource(uint256 tokenId, uint16 currentHP, uint16 currentMP, uint16 hpCost, uint16 mpCost);
     error UnexpectedERC721(address token, address operator);
     error BattleNotReadyForSettlement(uint256 livingUnits);
+    error BattleItemsUnavailable();
+    error BattleItemUnavailable(uint16 sItemId);
+    error InvalidBattleItemTarget(uint256 target);
+    error InvalidBattleItemAmount(uint128 amount);
+    error BattleObjectsUnsupported(uint32 battleObjectId);
+    error InvalidBattleAilmentId(uint32 ailmentId);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -147,6 +171,10 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         binderSkills = IBinderSkills(params.binderSkillsAddress);
         book0fArts = IBook0fArts(params.book0fArtsAddress);
         book0fRealms = IBook0fRealms(params.book0fRealmsAddress);
+        if (params.inventoryAddress != address(0)) {
+            if (params.inventoryAddress.code.length == 0) revert InvalidBattleInput();
+            binderInventory = IBinderInventory(params.inventoryAddress);
+        }
         mapId = params.requestedMapId;
         mapVersion = params.requestedMapVersion;
 
@@ -194,6 +222,7 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
             currentMP: unit.currentMP,
             tileId: unit.tileId,
             activeAilments: unit.activeAilments,
+            equipmentModifiers: unit.equipmentModifiers,
             alive: unit.alive,
             guardActive: unit.guardActive
         });
@@ -221,6 +250,32 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         return _selectedArts[tokenId][artId];
     }
 
+    function getEquipmentSnapshot(uint256 tokenId)
+        external
+        view
+        returns (uint256[5] memory tokenIds, int32[8] memory modifiers, uint32[5] memory configVersions)
+    {
+        BattleUnit storage unit = _requireParticipant(tokenId);
+        return (unit.equipmentTokenIds, unit.equipmentModifiers, unit.equipmentConfigVersions);
+    }
+
+    function getTemporaryModifiers(uint256 tokenId) external view returns (int32[8] memory modifiers) {
+        _requireParticipant(tokenId);
+        TimedStatModifier[] storage active = _temporaryModifiers[tokenId];
+        for (uint256 i; i < active.length; ++i) {
+            if (active[i].expiresAt <= block.timestamp) continue;
+            for (uint256 stat; stat < 8; ++stat) {
+                modifiers[stat] += active[i].delta[stat];
+            }
+        }
+    }
+
+    function isAilmentActive(uint256 tokenId, uint8 ailmentId) external view returns (bool) {
+        BattleUnit storage unit = _requireParticipant(tokenId);
+        return ailmentId != 0 && (unit.activeAilments & (uint256(1) << ailmentId)) != 0
+            && _ailmentExpiry[tokenId][ailmentId] > block.timestamp;
+    }
+
     /// @notice Referee action: numerical effects are calculated locally, never supplied by the caller.
     function useArt(uint256 actorTokenId, uint32 artId, uint256 targetTokenId) external {
         if (!isActive) revert BattleInactive();
@@ -232,54 +287,43 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         uint16 artVersion = _artVersions[artId];
         if (artVersion == 0) revert ArtNotSelected(actorTokenId, artId);
         binderStructs.ArtDefinition memory art = book0fArts.getArtDefinitionAtVersion(artId, artVersion);
-        if (art.artTypeId != BinderIds.ART_TYPE_MOVE_SET && art.artTypeId != BinderIds.ART_TYPE_ACTIVE) {
-            revert UnsupportedBattleArtType(art.artTypeId);
-        }
-        if (!ArtFormulaLib.canPayCosts(actor.currentHP, actor.currentMP, art.hpCost, art.mpCost)) {
-            revert InsufficientBattleResource(actorTokenId, actor.currentHP, actor.currentMP, art.hpCost, art.mpCost);
-        }
-
-        BattleUnit storage target = _requireParticipant(targetTokenId);
-        if (!target.alive) revert BattleUnitNotAlive(targetTokenId);
-        _validateTargetPattern(actorTokenId, targetTokenId, art);
-
-        actor.currentHP -= art.hpCost;
-        actor.currentMP -= art.mpCost;
-        // A declared Art completes even when its own HP cost defeats the caster.
-        // Mark the defeat before effects so the unit cannot take a second action,
-        // but deliberately do not settle until this complete declaration resolves.
-        if (actor.currentHP == 0) actor.alive = false;
-        int256 formulaResult =
-            ArtFormulaLib.evaluate(art.primaryFormula, _asEffectiveStats(actor), _asEffectiveStats(target));
-        uint16 actorHPAfterCost = actor.currentHP;
-        uint16 actorMPAfterCost = actor.currentMP;
-        uint16 targetHPBefore = target.currentHP;
-        _applyEffect(art.effectTypeId, target, formulaResult);
-        // A completed self-targeted Heal must not revive a caster that was
-        // defeated by this declaration's HP cost. This preserves the terminal
-        // invariant used by settlement: !alive always means zero HP.
-        if (!actor.alive && actor.currentHP != 0) actor.currentHP = 0;
-        int256 hpDelta = int256(uint256(target.currentHP)) - int256(uint256(targetHPBefore));
-        if (actorHPAfterCost != _units[actorTokenId].currentHP || actorMPAfterCost != _units[actorTokenId].currentMP) {
-            // Kept for clarity if a future effect mutates the actor after costs.
-            _markDirty(actorTokenId);
-        } else if (art.hpCost != 0 || art.mpCost != 0) {
-            _markDirty(actorTokenId);
-        }
-        if (target.currentHP != targetHPBefore) _markDirty(targetTokenId);
+        (int256 hpDelta, uint16 actorHPAfter, uint16 actorMPAfter, uint16 targetHPAfter) =
+            _resolveArt(actorTokenId, targetTokenId, art);
 
         ++actionNumber;
         emit ActionDeclared(actionNumber, actorTokenId, art.artTypeId, artId);
         emit ArtUsed(
-            actionNumber,
-            actorTokenId,
-            targetTokenId,
-            artId,
-            hpDelta,
-            actor.currentHP,
-            actor.currentMP,
-            target.currentHP
+            actionNumber, actorTokenId, targetTokenId, artId, hpDelta, actorHPAfter, actorMPAfter, targetHPAfter
         );
+    }
+
+    /// @notice Consumes a recognised SItem through Inventory and applies only its typed, battle-local effects.
+    function useItem(uint256 actorTokenId, uint8 inventorySlot, uint128 amount, uint256 target) external {
+        if (!isActive) revert BattleInactive();
+        if (address(binderInventory) == address(0)) revert BattleItemsUnavailable();
+        BattleUnit storage actor = _requireParticipant(actorTokenId);
+        if (actor.controller != msg.sender) revert UnauthorizedBattleActor(actorTokenId, msg.sender);
+        if (!actor.alive) revert BattleUnitNotAlive(actorTokenId);
+        if (amount == 0) revert InvalidBattleItemAmount(amount);
+
+        InventorySlot memory inventoryItem = binderInventory.getSlot(actorTokenId, inventorySlot);
+        if (inventoryItem.family != ItemFamily.SITEM || inventoryItem.equipped || inventoryItem.amount < amount) {
+            revert BattleItemUnavailable(inventoryItem.libraryId);
+        }
+        SItemConfig memory config = binderInventory.book().getSItem(inventoryItem.libraryId);
+        if (!config.exists || !config.enabled || config.effectCount == 0) {
+            revert BattleItemUnavailable(inventoryItem.libraryId);
+        }
+        _validateItemUse(actorTokenId, target, amount, config);
+
+        uint16 sItemId = binderInventory.consumeSItemForBattle(actorTokenId, inventorySlot, amount);
+        if (sItemId != inventoryItem.libraryId) revert BattleItemUnavailable(sItemId);
+        for (uint8 i; i < config.effectCount; ++i) {
+            _applyItemEffect(actorTokenId, target, amount, sItemId, i, config.effects[i]);
+        }
+        ++actionNumber;
+        emit ActionDeclared(actionNumber, actorTokenId, BinderIds.ACTION_TYPE_ITEM, sItemId);
+        emit ItemUsed(actionNumber, actorTokenId, sItemId, amount);
     }
 
     /// @notice Commits only changed local vitals at an explicit safe action boundary.
@@ -411,11 +455,15 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
             currentMP: metadata.dynamicStats.currentMP,
             tileId: spawnTileId,
             activeAilments: 0,
+            equipmentModifiers: [int32(0), 0, 0, 0, 0, 0, 0, 0],
+            equipmentTokenIds: [uint256(0), 0, 0, 0, 0],
+            equipmentConfigVersions: [uint32(0), 0, 0, 0, 0],
             alive: metadata.dynamicStats.currentHP != 0,
             guardActive: false
         });
         _participantIds.push(tokenId);
         _participantIndexPlusOne[tokenId] = uint8(_participantIds.length);
+        _snapshotEquipment(tokenId);
 
         for (uint256 index; index < loadout.length; ++index) {
             uint32 artId = loadout[index];
@@ -424,6 +472,10 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
             if (!book0fArts.artExists(artId)) revert BattleArtUnavailable(artId);
             binderStructs.ArtDefinition memory art = book0fArts.getArtDefinition(artId);
             if (art.version == 0 || !art.enabled) revert BattleArtUnavailable(artId);
+            uint16 learnedVersion = binderSkills.getLearnedArtVersion(tokenId, artId);
+            if (learnedVersion != art.version) {
+                revert BattleArtVersionStale(tokenId, artId, learnedVersion, art.version);
+            }
             if (!book0fArts.isClassEligible(artId, art.version, metadata.classId)) {
                 revert BattleArtClassIneligible(tokenId, artId, metadata.classId, art.version);
             }
@@ -442,6 +494,138 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
             if (moveSets[index] == artId) return true;
         }
         return false;
+    }
+
+    function _resolveArt(uint256 actorTokenId, uint256 targetTokenId, binderStructs.ArtDefinition memory art)
+        private
+        returns (int256 hpDelta, uint16 actorHPAfter, uint16 actorMPAfter, uint16 targetHPAfter)
+    {
+        if (art.artTypeId != BinderIds.ART_TYPE_MOVE_SET && art.artTypeId != BinderIds.ART_TYPE_ACTIVE) {
+            revert UnsupportedBattleArtType(art.artTypeId);
+        }
+        BattleUnit storage actor = _requireParticipant(actorTokenId);
+        if (!actor.alive) revert BattleUnitNotAlive(actorTokenId);
+        if (!ArtFormulaLib.canPayCosts(actor.currentHP, actor.currentMP, art.hpCost, art.mpCost)) {
+            revert InsufficientBattleResource(actorTokenId, actor.currentHP, actor.currentMP, art.hpCost, art.mpCost);
+        }
+        BattleUnit storage target = _requireParticipant(targetTokenId);
+        if (!target.alive) revert BattleUnitNotAlive(targetTokenId);
+        _validateTargetPattern(actorTokenId, targetTokenId, art);
+
+        actor.currentHP -= art.hpCost;
+        actor.currentMP -= art.mpCost;
+        if (actor.currentHP == 0) actor.alive = false;
+        uint16 targetHPBefore = target.currentHP;
+        int256 formulaResult = ArtFormulaLib.evaluate(
+            art.primaryFormula, _asEffectiveStats(actorTokenId, actor), _asEffectiveStats(targetTokenId, target)
+        );
+        _applyEffect(art.effectTypeId, target, formulaResult);
+        if (!actor.alive && actor.currentHP != 0) actor.currentHP = 0;
+        hpDelta = int256(uint256(target.currentHP)) - int256(uint256(targetHPBefore));
+        actorHPAfter = actor.currentHP;
+        actorMPAfter = actor.currentMP;
+        targetHPAfter = target.currentHP;
+        if (art.hpCost != 0 || art.mpCost != 0) _markDirty(actorTokenId);
+        if (target.currentHP != targetHPBefore) _markDirty(targetTokenId);
+    }
+
+    function _validateItemUse(uint256 actorTokenId, uint256 target, uint128 amount, SItemConfig memory config)
+        private
+        view
+    {
+        for (uint8 i; i < config.effectCount; ++i) {
+            ItemEffect memory effect = config.effects[i];
+            if (effect.scope != ItemUseScope.BATTLE_ONLY && effect.scope != ItemUseScope.WORLD_OR_BATTLE) {
+                revert BattleItemUnavailable(0);
+            }
+            if (effect.kind == ItemEffectKind.PLACE_BATTLE_OBJECT) {
+                if (effect.target != ItemTarget.TILE || target == 0 || target > type(uint16).max) {
+                    revert InvalidBattleItemTarget(target);
+                }
+            } else {
+                _validateItemTarget(actorTokenId, target, effect.target);
+            }
+            if (
+                amount != 1
+                    && (effect.kind == ItemEffectKind.CAST_ART || effect.kind == ItemEffectKind.PLACE_BATTLE_OBJECT)
+            ) {
+                revert InvalidBattleItemAmount(amount);
+            }
+        }
+    }
+
+    function _applyItemEffect(
+        uint256 actorTokenId,
+        uint256 targetTokenId,
+        uint128 amount,
+        uint16 sItemId,
+        uint8 effectIndex,
+        ItemEffect memory effect
+    ) private {
+        if (effect.kind == ItemEffectKind.MODIFY_CUR_HP || effect.kind == ItemEffectKind.MODIFY_CUR_MP) {
+            BattleUnit storage target = _requireParticipant(targetTokenId);
+            int256 delta = int256(effect.amount) * int256(uint256(amount));
+            if (effect.kind == ItemEffectKind.MODIFY_CUR_HP) {
+                uint16 before = target.currentHP;
+                target.currentHP = ArtFormulaLib.clampResourceDelta(delta, before, target.maxHP);
+                if (target.currentHP == 0) target.alive = false;
+                if (target.currentHP != before) _markDirty(targetTokenId);
+            } else {
+                uint16 before = target.currentMP;
+                target.currentMP = ArtFormulaLib.clampResourceDelta(delta, before, target.maxMP);
+                if (target.currentMP != before) _markDirty(targetTokenId);
+            }
+        } else if (effect.kind == ItemEffectKind.TEMP_STAT_DELTA) {
+            int32[8] memory delta;
+            for (uint256 stat; stat < 8; ++stat) {
+                int256 scaled = int256(effect.statDelta[stat]) * int256(uint256(amount));
+                if (scaled > type(int32).max || scaled < type(int32).min) revert InvalidBattleItemAmount(amount);
+                delta[stat] = int32(scaled);
+            }
+            _upsertTemporaryModifier(
+                targetTokenId, keccak256(abi.encodePacked(sItemId, effectIndex)), delta, effect.durationSeconds
+            );
+        } else if (effect.kind == ItemEffectKind.CURE_AILMENT) {
+            uint8 ailmentId = _checkedAilmentId(effect.refId);
+            _units[targetTokenId].activeAilments &= ~(uint256(1) << ailmentId);
+            delete _ailmentExpiry[targetTokenId][ailmentId];
+        } else if (effect.kind == ItemEffectKind.APPLY_AILMENT) {
+            uint8 ailmentId = _checkedAilmentId(effect.refId);
+            _units[targetTokenId].activeAilments |= uint256(1) << ailmentId;
+            _ailmentExpiry[targetTokenId][ailmentId] = uint64(block.timestamp) + uint64(effect.durationSeconds);
+        } else if (effect.kind == ItemEffectKind.CAST_ART) {
+            if (!book0fArts.isArtItemCastable(effect.refId)) revert BattleArtUnavailable(effect.refId);
+            binderStructs.ArtDefinition memory art = book0fArts.getArtDefinition(effect.refId);
+            if (!art.enabled) revert BattleArtUnavailable(effect.refId);
+            _resolveArt(actorTokenId, targetTokenId, art);
+        } else if (effect.kind == ItemEffectKind.PLACE_BATTLE_OBJECT) {
+            // Book0fRealms has no battle-object catalogue yet, so configured objects remain safely unusable.
+            revert BattleObjectsUnsupported(effect.refId);
+        } else {
+            revert BattleItemUnavailable(sItemId);
+        }
+    }
+
+    function _validateItemTarget(uint256 actorTokenId, uint256 targetTokenId, ItemTarget targetKind) private view {
+        BattleUnit storage actor = _requireParticipant(actorTokenId);
+        BattleUnit storage target = _requireParticipant(targetTokenId);
+        if (!target.alive) revert BattleUnitNotAlive(targetTokenId);
+        if (targetKind == ItemTarget.SELF) {
+            if (actorTokenId != targetTokenId) revert InvalidBattleItemTarget(targetTokenId);
+        } else if (targetKind == ItemTarget.ALLY) {
+            if (actor.controller != target.controller) revert InvalidBattleItemTarget(targetTokenId);
+        } else if (targetKind == ItemTarget.ENEMY) {
+            if (actor.controller == target.controller) revert InvalidBattleItemTarget(targetTokenId);
+        } else {
+            revert InvalidBattleItemTarget(targetTokenId);
+        }
+    }
+
+    function _checkedAilmentId(uint32 ailmentId) private pure returns (uint8) {
+        if (ailmentId < BinderIds.MIN_AILMENT_ID || ailmentId > BinderIds.MAX_AILMENT_ID) {
+            revert InvalidBattleAilmentId(ailmentId);
+        }
+        return uint8(ailmentId);
     }
 
     function _validateTargetPattern(uint256 actorTokenId, uint256 targetTokenId, binderStructs.ArtDefinition memory art)
@@ -472,9 +656,69 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         }
     }
 
-    function _asEffectiveStats(BattleUnit storage unit) internal view returns (uint256[8] memory stats) {
+    function _asEffectiveStats(uint256 tokenId, BattleUnit storage unit)
+        internal
+        view
+        returns (uint256[8] memory stats)
+    {
         for (uint256 index; index < stats.length; ++index) {
-            stats[index] = unit.baseStats[index];
+            int256 effective = int256(uint256(unit.baseStats[index])) + int256(unit.equipmentModifiers[index]);
+            TimedStatModifier[] storage active = _temporaryModifiers[tokenId];
+            for (uint256 modifierIndex; modifierIndex < active.length; ++modifierIndex) {
+                if (active[modifierIndex].expiresAt > block.timestamp) {
+                    effective += int256(active[modifierIndex].delta[index]);
+                }
+            }
+            stats[index] = effective > 0 ? uint256(effective) : 0;
+        }
+    }
+
+    function _upsertTemporaryModifier(uint256 tokenId, bytes32 key, int32[8] memory delta, uint32 durationSeconds)
+        private
+    {
+        TimedStatModifier[] storage active = _temporaryModifiers[tokenId];
+        for (uint256 i; i < active.length;) {
+            if (active[i].expiresAt <= block.timestamp) {
+                bytes32 expiredKey = active[i].key;
+                uint256 last = active.length - 1;
+                if (i != last) {
+                    active[i] = active[last];
+                    _temporaryModifierIndex[tokenId][active[i].key] = uint16(i + 1);
+                }
+                delete _temporaryModifierIndex[tokenId][expiredKey];
+                active.pop();
+            } else {
+                ++i;
+            }
+        }
+        uint16 indexPlusOne = _temporaryModifierIndex[tokenId][key];
+        uint64 expiresAt = uint64(block.timestamp) + uint64(durationSeconds);
+        if (indexPlusOne == 0) {
+            active.push(TimedStatModifier({key: key, delta: delta, expiresAt: expiresAt}));
+            _temporaryModifierIndex[tokenId][key] = uint16(active.length);
+        } else {
+            TimedStatModifier storage existing = active[indexPlusOne - 1];
+            existing.delta = delta;
+            existing.expiresAt = expiresAt;
+        }
+    }
+
+    function _snapshotEquipment(uint256 tokenId) private {
+        if (address(binderInventory) == address(0)) return;
+        InventorySlot[20] memory slots = binderInventory.getSlots(tokenId);
+        BattleUnit storage unit = _units[tokenId];
+        IBook0fItems itemBook = binderInventory.book();
+        for (uint256 i; i < slots.length; ++i) {
+            InventorySlot memory item = slots[i];
+            if (!item.occupied || item.family != ItemFamily.EQUIPMENT || !item.equipped) continue;
+            uint8 slot = uint8(item.equippedAs);
+            EqConfig memory cfg = itemBook.getEq(item.libraryId);
+            unit.equipmentTokenIds[slot] = item.instanceTokenId;
+            unit.equipmentConfigVersions[slot] = cfg.configVersion;
+            for (uint256 stat; stat < 8; ++stat) {
+                unit.equipmentModifiers[stat] +=
+                    int32(uint32(cfg.statsChgInc[stat])) - int32(uint32(cfg.statsChgDec[stat]));
+            }
         }
     }
 

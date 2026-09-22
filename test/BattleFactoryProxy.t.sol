@@ -8,8 +8,8 @@ import "../modular/Battle/BattleProxy.sol";
 import "../modular/BinderData.sol";
 import "../modular/supportContract/binderIds.sol";
 import "../modular/BinderSkills.sol";
-import "../modular/Book0fArts.sol";
-import "../modular/Book0fRealms.sol";
+import "../modular/shelf/Book0fArts.sol";
+import "../modular/shelf/Book0fRealms.sol";
 import "../modular/supportContract/CentralConsole.sol";
 import "../modular/supportContract/binderStructs.sol";
 
@@ -115,7 +115,7 @@ contract BattleFactoryProxyTest is Test {
         vm.prank(BOB);
         vm.expectRevert(
             abi.encodeWithSelector(
-                BattleProxy.BattleArtClassIneligible.selector, uint256(3), uint32(101), uint256(1), uint16(2)
+                BattleProxy.BattleArtVersionStale.selector, uint256(3), uint32(101), uint16(1), uint16(2)
             )
         );
         factory.acceptBattleInvitation(invitationId, _party(4, 2));

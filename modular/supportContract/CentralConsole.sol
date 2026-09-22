@@ -15,13 +15,22 @@ import "../interfaces/IFusionMinter.sol";
 import "../interfaces/IBinderLogic.sol";
 import "../interfaces/IScaleOfBalance.sol";
 import "../interfaces/IBattleFactory.sol";
+import "../interfaces/IBook0fItems.sol";
+import "../interfaces/IBinderInventory.sol";
+import "../interfaces/IEquipment.sol";
+import "../interfaces/ITomeAndGrimoires.sol";
+import "../interfaces/ISItems.sol";
+import "../interfaces/IItemUseRouter.sol";
+import "../interfaces/IItemStatsView.sol";
+import "../interfaces/ICreatorTokenTransferValidatorV5.sol";
 import "@openzeppelin/contracts-4.8/access/IAccessControl.sol";
 import "./WiringDiagnostics.sol";
+import "./ItemBookConfigurator.sol";
 
 /// @notice Canonical Binders module registry and configuration control plane.
 /// @dev It deliberately has no arbitrary call primitive and owns no NFT, Book,
 /// learned-skill, or battle gameplay state. BinderData is bound once at deployment.
-contract CentralConsole is AccessControl, ICentralConsole {
+contract CentralConsole is AccessControl, ICentralConsole, ItemBookConfigurator {
     bytes32 public constant CONFIG_ROLE = keccak256("CONFIG_ROLE");
 
     address public immutable override binderData;
@@ -36,6 +45,15 @@ contract CentralConsole is AccessControl, ICentralConsole {
     address public override battleFactory;
     uint32 public override battleFactoryVersion;
     address public override allegianceRegistry;
+    address public override book0fItems;
+    address public override binderInventory;
+    address public override equipment;
+    address public override tomeAndGrimoires;
+    address public override sItems;
+    address public override itemUseRouter;
+    address public override itemMetadataBuilder;
+    address public override itemStatsView;
+    address public override goldAsset;
     mapping(uint8 => address) public override activityModule;
     WiringDiagnostics private immutable wiringDiagnostics;
 
@@ -44,10 +62,18 @@ contract CentralConsole is AccessControl, ICentralConsole {
         address indexed previousFactory, address indexed newFactory, uint32 previousVersion, uint32 newVersion
     );
     event ActivityModuleUpdated(uint8 indexed activityId, address indexed previousModule, address indexed newModule);
+    event ItemSystemConfigured(
+        address indexed book, address indexed inventory, address equipment, address tomes, address sItems
+    );
+    event ItemTransferPolicyUpdated(address indexed collection, address indexed validator, uint48 listId);
+    event GoldAssetUpdated(address indexed previousAsset, address indexed newAsset);
+    event ItemIssuerConfigured(address indexed collection, address indexed issuer, bool allowed);
 
     error PendingMintsPreventRetirement(address logic, uint256 pendingCount);
     error PendingFusionsPreventRetirement(address minter, uint256 pendingCount);
     error ModuleStillCanonical(address module);
+    error InvalidItemSystem(address component);
+    error UnknownItemCollection(address collection);
 
     constructor(address initialOwner, address binderDataAddress) {
         if (initialOwner == address(0)) revert InvalidInitialOwner(initialOwner);
@@ -358,6 +384,13 @@ contract CentralConsole is AccessControl, ICentralConsole {
         address previousScale = scaleOfBalance;
         _configureScaleTargets(moduleAddress);
         _setScaleBalanceAuthorities(previousScale, moduleAddress);
+        if (book0fItems != address(0)) {
+            IBook0fItems(book0fItems).setItemsConfigAuthority(previousScale, moduleAddress);
+            bytes32 itemsRole = IBook0fItems(book0fItems).ITEMS_CONFIG_ROLE();
+            if (!IAccessControl(book0fItems).hasRole(itemsRole, moduleAddress)) {
+                revert CanonicalPairMismatch(moduleAddress, address(0));
+            }
+        }
         data.setScaleOfBalanceAuthority(previousScale, moduleAddress);
         life.setScaleOfBalanceAuthority(previousScale, moduleAddress);
         _setModule(BinderIds.MODULE_SCALE_OF_BALANCE, previousScale, moduleAddress);
@@ -372,6 +405,10 @@ contract CentralConsole is AccessControl, ICentralConsole {
     }
 
     function _configureScaleTargets(address scale) private {
+        if (book0fItems != address(0) && IScaleOfBalance(scale).book0fItems() != book0fItems) {
+            _requireScaleConfigAuthority(scale);
+            IScaleOfBalance(scale).setBook0fItems(book0fItems);
+        }
         if (book0fArts != address(0) && IScaleOfBalance(scale).book0fArts() != book0fArts) {
             _requireScaleConfigAuthority(scale);
             IScaleOfBalance(scale).setBook0fArts(book0fArts);
@@ -486,6 +523,180 @@ contract CentralConsole is AccessControl, ICentralConsole {
         allegianceRegistry = moduleAddress;
     }
 
+    /// @notice Atomically wires the fixed item graph. This Console owns the ERC-C collections, so no arbitrary
+    /// call surface is required to configure their inventory, metadata, or transfer policy paths.
+    function configureItemSystem(
+        address bookAddress,
+        address inventoryAddress,
+        address equipmentAddress,
+        address tomeAddress,
+        address sItemAddress,
+        address routerAddress,
+        address metadataBuilderAddress,
+        address statsViewAddress,
+        address entropyAddress,
+        address entropyProvider
+    ) external override onlyRole(CONFIG_ROLE) {
+        _requireContract(BinderIds.MODULE_BOOK_OF_ITEMS, bookAddress);
+        _requireContract(BinderIds.MODULE_BINDER_INVENTORY, inventoryAddress);
+        _requireContract(BinderIds.MODULE_EQUIPMENT, equipmentAddress);
+        _requireContract(BinderIds.MODULE_TOME_AND_GRIMOIRES, tomeAddress);
+        _requireContract(BinderIds.MODULE_SITEMS, sItemAddress);
+        _requireContract(BinderIds.MODULE_ITEM_USE_ROUTER, routerAddress);
+        _requireContract(BinderIds.MODULE_ITEM_METADATA_BUILDER, metadataBuilderAddress);
+        _requireContract(BinderIds.MODULE_ITEM_STATS_VIEW, statsViewAddress);
+        if (binderSkills == address(0) || book0fArts == address(0)) revert InvalidItemSystem(address(0));
+        if (book0fItems != address(0) && book0fItems != bookAddress) revert InvalidItemSystem(bookAddress);
+        if (binderInventory != address(0) && binderInventory != inventoryAddress) {
+            revert InvalidItemSystem(inventoryAddress);
+        }
+
+        IBook0fItems itemBook = IBook0fItems(bookAddress);
+        if (
+            address(itemBook.book0fArts()) != book0fArts
+                || !IAccessControl(bookAddress).hasRole(itemBook.ITEMS_CONFIG_ROLE(), address(this))
+        ) revert InvalidItemSystem(bookAddress);
+
+        IBinderInventory inventory = IBinderInventory(inventoryAddress);
+        if (
+            inventory.centralConsole() != address(this) || _inventoryBinderData(inventoryAddress) != binderData
+                || address(inventory.book()) != bookAddress
+        ) revert InvalidItemSystem(inventoryAddress);
+        _validateItemCollection(equipmentAddress);
+        _validateItemCollection(tomeAddress);
+        _validateItemCollection(sItemAddress);
+        if (
+            address(IItemUseRouter(routerAddress).binderData()) != binderData
+                || address(IItemUseRouter(routerAddress).book()) != bookAddress
+                || address(IItemUseRouter(routerAddress).inventory()) != inventoryAddress
+                || address(IItemStatsView(statsViewAddress).binderData()) != binderData
+        ) revert InvalidItemSystem(routerAddress);
+
+        if (address(inventory.equipment()) == address(0)) {
+            inventory.setCollections(equipmentAddress, tomeAddress, sItemAddress);
+        } else if (
+            address(inventory.equipment()) != equipmentAddress || address(inventory.tomes()) != tomeAddress
+                || address(inventory.sItems()) != sItemAddress
+        ) {
+            revert InvalidItemSystem(inventoryAddress);
+        }
+        IEquipment(equipmentAddress).setInventory(inventoryAddress);
+        ITomeAndGrimoires(tomeAddress).setInventory(inventoryAddress);
+        ISItems(sItemAddress).setInventory(inventoryAddress);
+        inventory.setStatsView(statsViewAddress);
+        inventory.setBinderSkills(binderSkills);
+        inventory.setItemUseRouter(routerAddress);
+        IBinderData(binderData).setItemUseRouter(itemUseRouter, routerAddress);
+        IBinderSkills(binderSkills).setTomeLearningDependencies(
+            bookAddress, inventoryAddress, entropyAddress, entropyProvider
+        );
+
+        _setModule(BinderIds.MODULE_BOOK_OF_ITEMS, book0fItems, bookAddress);
+        _setModule(BinderIds.MODULE_BINDER_INVENTORY, binderInventory, inventoryAddress);
+        _setModule(BinderIds.MODULE_EQUIPMENT, equipment, equipmentAddress);
+        _setModule(BinderIds.MODULE_TOME_AND_GRIMOIRES, tomeAndGrimoires, tomeAddress);
+        _setModule(BinderIds.MODULE_SITEMS, sItems, sItemAddress);
+        _setModule(BinderIds.MODULE_ITEM_USE_ROUTER, itemUseRouter, routerAddress);
+        _setModule(BinderIds.MODULE_ITEM_METADATA_BUILDER, itemMetadataBuilder, metadataBuilderAddress);
+        _setModule(BinderIds.MODULE_ITEM_STATS_VIEW, itemStatsView, statsViewAddress);
+        book0fItems = bookAddress;
+        binderInventory = inventoryAddress;
+        equipment = equipmentAddress;
+        tomeAndGrimoires = tomeAddress;
+        sItems = sItemAddress;
+        itemUseRouter = routerAddress;
+        itemMetadataBuilder = metadataBuilderAddress;
+        itemStatsView = statsViewAddress;
+        if (scaleOfBalance != address(0)) _configureScaleTargets(scaleOfBalance);
+        emit ItemSystemConfigured(bookAddress, inventoryAddress, equipmentAddress, tomeAddress, sItemAddress);
+    }
+
+    function _itemBookForConfig() internal view override onlyRole(CONFIG_ROLE) returns (IBook0fItems) {
+        if (book0fItems == address(0)) revert InvalidItemSystem(book0fItems);
+        return IBook0fItems(book0fItems);
+    }
+
+    function setGoldAsset(address asset) external override onlyRole(CONFIG_ROLE) {
+        if (asset != address(0) && asset.code.length == 0) revert InvalidItemSystem(asset);
+        emit GoldAssetUpdated(goldAsset, asset);
+        goldAsset = asset;
+    }
+
+    function setItemIssuer(address collection, address issuer, bool allowed) external override onlyRole(CONFIG_ROLE) {
+        _itemCollection(collection).setIssuer(issuer, allowed);
+        emit ItemIssuerConfigured(collection, issuer, allowed);
+    }
+
+    function setItemTransferValidator(address collection, address validator) external override onlyRole(CONFIG_ROLE) {
+        if (validator != address(0) && validator.code.length == 0) revert InvalidItemSystem(validator);
+        _itemCollection(collection).setTransferValidator(validator);
+        emit ItemTransferPolicyUpdated(collection, validator, 0);
+    }
+
+    function configureItemTransferRuleset(
+        address collection,
+        uint8 rulesetId,
+        address customRuleset,
+        uint8 globalOptions,
+        uint16 rulesetOptions
+    ) external override onlyRole(CONFIG_ROLE) {
+        _itemCollection(collection).configureTransferRuleset(rulesetId, customRuleset, globalOptions, rulesetOptions);
+        emit ItemTransferPolicyUpdated(collection, _itemCollection(collection).getTransferValidator(), 0);
+    }
+
+    function applyItemTransferList(address collection, uint48 listId) external override onlyRole(CONFIG_ROLE) {
+        _itemCollection(collection).applyTransferList(listId);
+        emit ItemTransferPolicyUpdated(collection, _itemCollection(collection).getTransferValidator(), listId);
+    }
+
+    function createItemTransferList(address collection, string calldata name)
+        external
+        override
+        onlyRole(CONFIG_ROLE)
+        returns (uint48 listId)
+    {
+        address validator = _itemCollection(collection).getTransferValidator();
+        if (validator == address(0)) revert InvalidItemSystem(validator);
+        listId = ICreatorTokenTransferValidatorV5(validator).createList(name);
+        if (listId == 0 || ICreatorTokenTransferValidatorV5(validator).listOwners(listId) != address(this)) {
+            revert InvalidItemSystem(validator);
+        }
+        emit ItemTransferPolicyUpdated(collection, validator, listId);
+    }
+
+    function addItemTransferListAccounts(address collection, uint48 listId, uint8 listType, address[] calldata accounts)
+        external
+        override
+        onlyRole(CONFIG_ROLE)
+    {
+        ICreatorTokenTransferValidatorV5(_itemCollection(collection).getTransferValidator()).addAccountsToList(
+            listId, listType, accounts
+        );
+    }
+
+    function addItemTransferListCodeHashes(
+        address collection,
+        uint48 listId,
+        uint8 listType,
+        bytes32[] calldata codehashes
+    ) external override onlyRole(CONFIG_ROLE) {
+        ICreatorTokenTransferValidatorV5(_itemCollection(collection).getTransferValidator()).addCodeHashesToList(
+            listId, listType, codehashes
+        );
+    }
+
+    function setItemBaseImageURI(address collection, string calldata value) external override onlyRole(CONFIG_ROLE) {
+        _itemCollection(collection).setBaseImageURI(value);
+    }
+
+    function setItemImageURI(address collection, uint16 libraryId, string calldata value)
+        external
+        override
+        onlyRole(CONFIG_ROLE)
+    {
+        _itemCollection(collection).setImageURI(libraryId, value);
+    }
+
     /// @notice Registers and activates the canonical controller for a future activity type.
     function setActivityModule(uint8 activityId, address moduleAddress) external override onlyRole(CONFIG_ROLE) {
         if (
@@ -512,6 +723,14 @@ contract CentralConsole is AccessControl, ICentralConsole {
         if (moduleId == BinderIds.MODULE_SCALE_OF_BALANCE) return scaleOfBalance;
         if (moduleId == BinderIds.MODULE_BATTLE_FACTORY) return battleFactory;
         if (moduleId == BinderIds.MODULE_ALLEGIANCE_REGISTRY) return allegianceRegistry;
+        if (moduleId == BinderIds.MODULE_BOOK_OF_ITEMS) return book0fItems;
+        if (moduleId == BinderIds.MODULE_BINDER_INVENTORY) return binderInventory;
+        if (moduleId == BinderIds.MODULE_EQUIPMENT) return equipment;
+        if (moduleId == BinderIds.MODULE_TOME_AND_GRIMOIRES) return tomeAndGrimoires;
+        if (moduleId == BinderIds.MODULE_SITEMS) return sItems;
+        if (moduleId == BinderIds.MODULE_ITEM_USE_ROUTER) return itemUseRouter;
+        if (moduleId == BinderIds.MODULE_ITEM_METADATA_BUILDER) return itemMetadataBuilder;
+        if (moduleId == BinderIds.MODULE_ITEM_STATS_VIEW) return itemStatsView;
         revert UnknownCanonicalModule(moduleId);
     }
 
@@ -521,7 +740,10 @@ contract CentralConsole is AccessControl, ICentralConsole {
                 moduleAddress == binderData || moduleAddress == binderSkills || moduleAddress == binderMetadata
                     || moduleAddress == book0fLife || moduleAddress == book0fArts || moduleAddress == book0fRealms
                     || moduleAddress == binderLogic || moduleAddress == fusionMinter || moduleAddress == scaleOfBalance
-                    || moduleAddress == battleFactory || moduleAddress == allegianceRegistry
+                    || moduleAddress == battleFactory || moduleAddress == allegianceRegistry || moduleAddress == book0fItems
+                    || moduleAddress == binderInventory || moduleAddress == equipment || moduleAddress == tomeAndGrimoires
+                    || moduleAddress == sItems || moduleAddress == itemUseRouter || moduleAddress == itemMetadataBuilder
+                    || moduleAddress == itemStatsView
             );
     }
 
@@ -531,6 +753,28 @@ contract CentralConsole is AccessControl, ICentralConsole {
 
     function isFullyWired() external view override returns (bool) {
         return wiringDiagnostics.isFullyWired(_wiringStatus());
+    }
+
+    function getItemWiringStatus() external view override returns (ItemWiringStatus memory status) {
+        if (book0fItems == address(0) || binderInventory == address(0)) return status;
+        IBook0fItems itemBook = IBook0fItems(book0fItems);
+        status.bookAuthorityMatch = address(itemBook.book0fArts()) == book0fArts
+            && IAccessControl(book0fItems).hasRole(itemBook.ITEMS_CONFIG_ROLE(), address(this));
+        IBinderInventory inventory = IBinderInventory(binderInventory);
+        status.inventoryDependenciesMatch = inventory.centralConsole() == address(this)
+            && _inventoryBinderData(binderInventory) == binderData && address(inventory.book()) == book0fItems;
+        status.collectionsMatch = address(inventory.equipment()) == equipment
+            && address(inventory.tomes()) == tomeAndGrimoires && address(inventory.sItems()) == sItems;
+        status.collectionOwnershipMatch = equipment != address(0) && tomeAndGrimoires != address(0)
+            && sItems != address(0) && IEquipment(equipment).owner() == address(this)
+            && ITomeAndGrimoires(tomeAndGrimoires).owner() == address(this) && ISItems(sItems).owner() == address(this);
+        status.routerDependenciesMatch = itemUseRouter != address(0)
+            && address(IItemUseRouter(itemUseRouter).binderData()) == binderData
+            && address(IItemUseRouter(itemUseRouter).book()) == book0fItems
+            && address(IItemUseRouter(itemUseRouter).inventory()) == binderInventory;
+        status.skillsDependenciesMatch = binderSkills != address(0)
+            && address(IBinderSkills(binderSkills).book0fItems()) == book0fItems
+            && address(IBinderSkills(binderSkills).binderInventory()) == binderInventory;
     }
 
     function _wiringStatus() internal view returns (WiringStatus memory) {
@@ -550,6 +794,27 @@ contract CentralConsole is AccessControl, ICentralConsole {
             allegianceRegistry: allegianceRegistry
         });
         return wiringDiagnostics.collect(input);
+    }
+
+    function _validateItemCollection(address collection) private view {
+        IItemCollection candidate = IItemCollection(collection);
+        if (candidate.owner() != address(this)) revert InvalidItemSystem(collection);
+    }
+
+    function _inventoryBinderData(address inventory) private view returns (address data) {
+        (bool ok, bytes memory result) = inventory.staticcall(abi.encodeWithSignature("binderData()"));
+        if (!ok || result.length != 32) return address(0);
+        data = abi.decode(result, (address));
+    }
+
+    function _itemCollection(address collection) private view returns (IItemCollection) {
+        if (
+            collection == address(0)
+                || (collection != equipment && collection != tomeAndGrimoires && collection != sItems)
+        ) {
+            revert UnknownItemCollection(collection);
+        }
+        return IItemCollection(collection);
     }
 
     function _setModule(bytes32 moduleId, address previousModule, address newModule) internal {

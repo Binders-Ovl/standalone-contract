@@ -5,7 +5,7 @@ import "forge-std/Test.sol";
 import "../modular/AllegianceRegistry.sol";
 import "../modular/BinderData.sol";
 import "../modular/BinderLogic.sol";
-import "../modular/Book0fLife.sol";
+import "../modular/shelf/Book0fLife.sol";
 import "../modular/supportContract/CentralConsole.sol";
 import "../modular/supportContract/binderStructs.sol";
 

@@ -127,6 +127,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     event FusionActivityRegistered(uint256 indexed tokenId, address indexed fusionMinter);
     event FusionActivityCleared(uint256 indexed tokenId, address indexed fusionMinter);
     event BinderLogicAuthorizationUpdated(address indexed logic, bool authorized);
+    event ItemUseRouterUpdated(address indexed previousRouter, address indexed newRouter);
 
     constructor(address initialOwner, string memory newBaseImageURI) ERC721("Binders", "UBIND") {
         if (bytes(newBaseImageURI).length > 0 && bytes(newBaseImageURI)[bytes(newBaseImageURI).length - 1] != "/") {
@@ -358,6 +359,14 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     function setScaleOfBalanceAuthority(address previousScale, address newScale) external onlyRole(CONFIG_ROLE) {
         _grantRole(CONFIG_ROLE, newScale);
         if (previousScale != newScale) _revokeRole(CONFIG_ROLE, previousScale);
+    }
+
+    /// @notice Wires the sole non-battle consumable route; it may update current vitals only.
+    function setItemUseRouter(address previousRouter, address newRouter) external onlyRole(CONFIG_ROLE) {
+        if (newRouter.code.length == 0) revert InvalidBattleFactory(newRouter);
+        _grantRole(BATTLE_ROLE, newRouter);
+        if (previousRouter != address(0) && previousRouter != newRouter) _revokeRole(BATTLE_ROLE, previousRouter);
+        emit ItemUseRouterUpdated(previousRouter, newRouter);
     }
 
     /// @notice Enables the canonical Factory gateway to bind a just-escrowed NFT to a recognized clone.

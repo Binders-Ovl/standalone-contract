@@ -2,10 +2,10 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts-4.8/access/AccessControl.sol";
-import "./supportContract/binderIds.sol";
-import "./supportContract/Errors.sol";
-import "./supportContract/binderStructs.sol";
-import "./interfaces/IBook0fRealms.sol";
+import "../supportContract/binderIds.sol";
+import "../supportContract/Errors.sol";
+import "../supportContract/binderStructs.sol";
+import "../interfaces/IBook0fRealms.sol";
 
 /// @notice Canonical versioned map, tile, and castle-to-map configuration.
 /// @dev Tile IDs are local to each map version and are intentionally bounded to uint16.

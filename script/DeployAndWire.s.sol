@@ -7,12 +7,12 @@ import "../modular/AllegianceRegistry.sol";
 import "../modular/BinderData.sol";
 import "../modular/BinderLogic.sol";
 import "../modular/BinderSkills.sol";
-import "../modular/Book0fArts.sol";
-import "../modular/Book0fLife.sol";
-import "../modular/Book0fRealms.sol";
+import "../modular/shelf/Book0fArts.sol";
+import "../modular/shelf/Book0fLife.sol";
+import "../modular/shelf/Book0fRealms.sol";
 import "../modular/FusionMinter.sol";
 import "../modular/ScaleOfBalance.sol";
-import "../modular/scripts/InitializeGameData.sol";
+import "../initiate/InitializeUnits.sol";
 import "../modular/Battle/BattleFactory.sol";
 import "../modular/Battle/BattleProxy.sol";
 import "../modular/supportContract/BinderMetadata.sol";
@@ -82,7 +82,7 @@ contract DeployAndWire is Script {
     function _configureInitialGameData(Deployment memory deployment) internal {
         BinderData binderData = BinderData(deployment.binderData);
         Book0fLife book0fLife = Book0fLife(deployment.book0fLife);
-        InitializeGameData initializer = new InitializeGameData();
+        InitializeUnits initializer = new InitializeUnits();
 
         binderData.grantRole(binderData.CONFIG_ROLE(), address(initializer));
         book0fLife.grantRole(book0fLife.CONFIG_ROLE(), address(initializer));

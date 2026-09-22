@@ -9,6 +9,7 @@ import "../interfaces/IBinderSkills.sol";
 import "../interfaces/IBook0fLife.sol";
 import "../interfaces/IBook0fArts.sol";
 import "./binderStructs.sol";
+import "../libraries/JsonStringLib.sol";
 
 /// @notice Read-only typed NFT lens and dynamic Base64 metadata renderer.
 /// @dev It owns no gameplay state and only reads the canonical
@@ -133,30 +134,24 @@ contract BinderMetadata is Ownable {
     function _buildUnitDetails(uint256 tokenId) internal view returns (UnitDetailsView memory details) {
         binderStructs.NFTMetadata memory meta = binderData.getNFTDetails(tokenId);
         binderStructs.UnitStateView memory state = binderData.getUnitState(tokenId);
-        uint32[3] memory moveSets = binderSkills.getMoveSets(tokenId);
-        string[3] memory moveSetNames;
-        for (uint256 i; i < moveSets.length; ++i) {
-            moveSetNames[i] = _artName(moveSets[i]);
+        details.name = meta.name;
+        details.classId = meta.classId;
+        details.className = book0fLife.getClassName(meta.classId);
+        details.rarityId = meta.rarityId;
+        details.rarityName = book0fLife.getRarityName(meta.rarityId);
+        details.staticStats = meta.staticStats;
+        details.dynamicStats = meta.dynamicStats;
+        details.readyToArm = state.readyToArm;
+        details.idle = state.idle;
+        details.transferable = state.transferable;
+        details.activity = state.activity;
+        details.activityName = _activityName(state.activity.activityId);
+        details.moveSets = binderSkills.getMoveSets(tokenId);
+        for (uint256 i; i < details.moveSets.length; ++i) {
+            details.moveSetNames[i] = _artName(details.moveSets[i]);
         }
-
-        details = UnitDetailsView({
-            name: meta.name,
-            classId: meta.classId,
-            className: book0fLife.getClassName(meta.classId),
-            rarityId: meta.rarityId,
-            rarityName: book0fLife.getRarityName(meta.rarityId),
-            staticStats: meta.staticStats,
-            dynamicStats: meta.dynamicStats,
-            readyToArm: state.readyToArm,
-            idle: state.idle,
-            transferable: state.transferable,
-            activity: state.activity,
-            activityName: _activityName(state.activity.activityId),
-            moveSets: moveSets,
-            moveSetNames: moveSetNames,
-            activeSkillCount: binderSkills.getActiveSkillCount(tokenId),
-            passiveSkillCount: binderSkills.getPassiveSkillCount(tokenId)
-        });
+        details.activeSkillCount = binderSkills.getActiveSkillCount(tokenId);
+        details.passiveSkillCount = binderSkills.getPassiveSkillCount(tokenId);
     }
 
     function _skillPage(uint32[] memory artIds) internal view returns (SkillDetailsPage memory page) {
@@ -173,9 +168,9 @@ contract BinderMetadata is Ownable {
         return string(
             abi.encodePacked(
                 '{"name":"',
-                _escapeJson(details.name),
+                JsonStringLib.escape(details.name),
                 '","description":"Binders Character NFT","image":"',
-                _escapeJson(image),
+                JsonStringLib.escape(image),
                 '","attributes":[',
                 _buildAttributes(details),
                 "]}"
@@ -274,8 +269,11 @@ contract BinderMetadata is Ownable {
     }
 
     function _stringAttribute(string memory traitType, string memory value) internal pure returns (string memory) {
-        return
-            string(abi.encodePacked('{"trait_type":"', _escapeJson(traitType), '","value":"', _escapeJson(value), '"}'));
+        return string(
+            abi.encodePacked(
+                '{"trait_type":"', JsonStringLib.escape(traitType), '","value":"', JsonStringLib.escape(value), '"}'
+            )
+        );
     }
 
     function _numberAttribute(string memory traitType, uint256 value) internal pure returns (string memory) {
@@ -284,48 +282,5 @@ contract BinderMetadata is Ownable {
 
     function _boolName(bool value) internal pure returns (string memory) {
         return value ? "True" : "False";
-    }
-
-    function _escapeJson(string memory raw) internal pure returns (string memory) {
-        bytes memory source = bytes(raw);
-        bytes memory escaped = new bytes(source.length * 6);
-        uint256 outputLength;
-        bytes16 hexSymbols = "0123456789abcdef";
-
-        for (uint256 i; i < source.length; ++i) {
-            bytes1 char = source[i];
-            if (char == '"' || char == "\\") {
-                escaped[outputLength++] = "\\";
-                escaped[outputLength++] = char;
-            } else if (char == bytes1(0x08)) {
-                escaped[outputLength++] = "\\";
-                escaped[outputLength++] = "b";
-            } else if (char == bytes1(0x0c)) {
-                escaped[outputLength++] = "\\";
-                escaped[outputLength++] = "f";
-            } else if (char == bytes1(0x0a)) {
-                escaped[outputLength++] = "\\";
-                escaped[outputLength++] = "n";
-            } else if (char == bytes1(0x0d)) {
-                escaped[outputLength++] = "\\";
-                escaped[outputLength++] = "r";
-            } else if (char == bytes1(0x09)) {
-                escaped[outputLength++] = "\\";
-                escaped[outputLength++] = "t";
-            } else if (uint8(char) < 0x20) {
-                escaped[outputLength++] = "\\";
-                escaped[outputLength++] = "u";
-                escaped[outputLength++] = "0";
-                escaped[outputLength++] = "0";
-                escaped[outputLength++] = hexSymbols[uint8(char) >> 4];
-                escaped[outputLength++] = hexSymbols[uint8(char) & 0x0f];
-            } else {
-                escaped[outputLength++] = char;
-            }
-        }
-        assembly ("memory-safe") {
-            mstore(escaped, outputLength)
-        }
-        return string(escaped);
     }
 }

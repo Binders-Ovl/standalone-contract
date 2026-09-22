@@ -2,10 +2,10 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts-4.8/access/AccessControl.sol";
-import "./supportContract/binderIds.sol";
-import "./supportContract/Errors.sol";
-import "./supportContract/binderStructs.sol";
-import "./interfaces/IBook0fArts.sol";
+import "../supportContract/binderIds.sol";
+import "../supportContract/Errors.sol";
+import "../supportContract/binderStructs.sol";
+import "../interfaces/IBook0fArts.sol";
 
 /// @notice Canonical, versioned Art/Skill definitions; it never owns learned skills.
 contract Book0fArts is AccessControl, IBook0fArts {
@@ -192,6 +192,11 @@ contract Book0fArts is AccessControl, IBook0fArts {
         return _definitions[artId][_currentVersion[artId]].enabled;
     }
 
+    function isArtItemCastable(uint32 artId) external view override returns (bool) {
+        _requireArt(artId);
+        return _definitions[artId][_currentVersion[artId]].itemCastable;
+    }
+
     /// @dev An empty eligibility list means the Art is available to every class.
     function isClassEligible(uint32 artId, uint16 version, uint256 classId) external view override returns (bool) {
         _requireArtVersion(artId, version);
@@ -227,6 +232,7 @@ contract Book0fArts is AccessControl, IBook0fArts {
         internal
     {
         _validateDefinition(definition);
+        if (eligibility.length > 16) revert InvalidArtDefinition();
         uint32 artId = definition.artId;
         uint16 version = definition.version;
         if (_versionExists[artId][version]) revert InvalidArtVersion(version);
@@ -261,6 +267,7 @@ contract Book0fArts is AccessControl, IBook0fArts {
 
         _validateFormula(definition.primaryFormula);
         _validateFormula(definition.secondaryFormula);
+        _validateSkillRequirements(definition.requiredSkillIds, definition.forbiddenSkillIds);
         if (definition.ailmentId != 0 && definition.ailmentId < BinderIds.MIN_AILMENT_ID) {
             revert InvalidAilmentId(definition.ailmentId);
         }
@@ -283,6 +290,16 @@ contract Book0fArts is AccessControl, IBook0fArts {
         destination.ailmentId = source.ailmentId;
         destination.version = source.version;
         destination.enabled = source.enabled;
+        destination.minBaseStats = source.minBaseStats;
+        destination.itemCastable = source.itemCastable;
+        delete destination.requiredSkillIds;
+        delete destination.forbiddenSkillIds;
+        for (uint256 i; i < source.requiredSkillIds.length; ++i) {
+            destination.requiredSkillIds.push(source.requiredSkillIds[i]);
+        }
+        for (uint256 i; i < source.forbiddenSkillIds.length; ++i) {
+            destination.forbiddenSkillIds.push(source.forbiddenSkillIds[i]);
+        }
         _writeFormula(destination.primaryFormula, source.primaryFormula);
         _writeFormula(destination.secondaryFormula, source.secondaryFormula);
     }
@@ -315,6 +332,10 @@ contract Book0fArts is AccessControl, IBook0fArts {
         return candidate.hpCost == current.hpCost && candidate.mpCost == current.mpCost
             && candidate.range == current.range && candidate.requirementFlags == current.requirementFlags
             && candidate.ailmentId == current.ailmentId && candidate.enabled == current.enabled
+            && candidate.itemCastable == current.itemCastable
+            && _sameMinimumStats(candidate.minBaseStats, current.minBaseStats)
+            && _sameSkillList(candidate.requiredSkillIds, current.requiredSkillIds)
+            && _sameSkillList(candidate.forbiddenSkillIds, current.forbiddenSkillIds)
             && _sameFormula(candidate.primaryFormula, current.primaryFormula)
             && _sameFormula(candidate.secondaryFormula, current.secondaryFormula);
     }
@@ -347,6 +368,40 @@ contract Book0fArts is AccessControl, IBook0fArts {
         if (eligibility.length != _eligibleClassIds[artId][version].length) return false;
         for (uint256 i; i < eligibility.length; ++i) {
             if (!_classEligible[artId][version][eligibility[i]]) return false;
+        }
+        return true;
+    }
+
+    function _validateSkillRequirements(uint32[] memory required, uint32[] memory forbidden) private pure {
+        if (required.length > 16 || forbidden.length > 16) revert InvalidArtDefinition();
+        for (uint256 i; i < required.length; ++i) {
+            if (required[i] == 0) revert InvalidArtDefinition();
+            for (uint256 j; j < i; ++j) {
+                if (required[i] == required[j]) revert InvalidArtDefinition();
+            }
+            for (uint256 j; j < forbidden.length; ++j) {
+                if (required[i] == forbidden[j]) revert InvalidArtDefinition();
+            }
+        }
+        for (uint256 i; i < forbidden.length; ++i) {
+            if (forbidden[i] == 0) revert InvalidArtDefinition();
+            for (uint256 j; j < i; ++j) {
+                if (forbidden[i] == forbidden[j]) revert InvalidArtDefinition();
+            }
+        }
+    }
+
+    function _sameMinimumStats(uint16[8] calldata candidate, uint16[8] memory current) private pure returns (bool) {
+        for (uint256 i; i < 8; ++i) {
+            if (candidate[i] != current[i]) return false;
+        }
+        return true;
+    }
+
+    function _sameSkillList(uint32[] calldata candidate, uint32[] memory current) private pure returns (bool) {
+        if (candidate.length != current.length) return false;
+        for (uint256 i; i < candidate.length; ++i) {
+            if (candidate[i] != current[i]) return false;
         }
         return true;
     }

@@ -168,6 +168,10 @@ library binderStructs {
         uint8 ailmentId;
         uint16 version;
         bool enabled;
+        uint16[8] minBaseStats;
+        uint32[] requiredSkillIds;
+        uint32[] forbiddenSkillIds;
+        bool itemCastable;
     }
 
     /// @notice Versioned rectangular-map header owned by Book0fRealms.

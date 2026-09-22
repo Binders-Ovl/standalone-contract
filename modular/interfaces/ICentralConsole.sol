@@ -23,6 +23,15 @@ interface ICentralConsole {
         bool consoleAuthorityMatch;
     }
 
+    struct ItemWiringStatus {
+        bool bookAuthorityMatch;
+        bool inventoryDependenciesMatch;
+        bool collectionsMatch;
+        bool collectionOwnershipMatch;
+        bool routerDependenciesMatch;
+        bool skillsDependenciesMatch;
+    }
+
     function binderData() external view returns (address);
     function binderSkills() external view returns (address);
     function binderMetadata() external view returns (address);
@@ -35,6 +44,15 @@ interface ICentralConsole {
     function battleFactory() external view returns (address);
     function battleFactoryVersion() external view returns (uint32);
     function allegianceRegistry() external view returns (address);
+    function book0fItems() external view returns (address);
+    function binderInventory() external view returns (address);
+    function equipment() external view returns (address);
+    function tomeAndGrimoires() external view returns (address);
+    function sItems() external view returns (address);
+    function itemUseRouter() external view returns (address);
+    function itemMetadataBuilder() external view returns (address);
+    function itemStatsView() external view returns (address);
+    function goldAsset() external view returns (address);
     function activityModule(uint8 activityId) external view returns (address);
 
     function canonicalModule(bytes32 moduleId) external view returns (address);
@@ -53,7 +71,42 @@ interface ICentralConsole {
     function setScaleOfBalance(address moduleAddress) external;
     function setBattleFactory(address moduleAddress, uint32 implementationVersion) external;
     function setAllegianceRegistry(address moduleAddress) external;
+    function configureItemSystem(
+        address bookAddress,
+        address inventoryAddress,
+        address equipmentAddress,
+        address tomeAddress,
+        address sItemAddress,
+        address routerAddress,
+        address metadataBuilderAddress,
+        address statsViewAddress,
+        address entropyAddress,
+        address entropyProvider
+    ) external;
+    function setGoldAsset(address asset) external;
+    function setItemIssuer(address collection, address issuer, bool allowed) external;
+    function setItemTransferValidator(address collection, address validator) external;
+    function configureItemTransferRuleset(
+        address collection,
+        uint8 rulesetId,
+        address customRuleset,
+        uint8 globalOptions,
+        uint16 rulesetOptions
+    ) external;
+    function applyItemTransferList(address collection, uint48 listId) external;
+    function createItemTransferList(address collection, string calldata name) external returns (uint48 listId);
+    function addItemTransferListAccounts(address collection, uint48 listId, uint8 listType, address[] calldata accounts)
+        external;
+    function addItemTransferListCodeHashes(
+        address collection,
+        uint48 listId,
+        uint8 listType,
+        bytes32[] calldata codehashes
+    ) external;
+    function setItemBaseImageURI(address collection, string calldata value) external;
+    function setItemImageURI(address collection, uint16 libraryId, string calldata value) external;
     function setActivityModule(uint8 activityId, address moduleAddress) external;
     function getWiringStatus() external view returns (WiringStatus memory);
+    function getItemWiringStatus() external view returns (ItemWiringStatus memory);
     function isFullyWired() external view returns (bool);
 }

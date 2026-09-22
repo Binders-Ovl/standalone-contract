@@ -64,6 +64,7 @@ interface IBinderData is IERC721 {
     function setAuthorizedFusionMinter(address minter, bool authorized) external;
     function setAuthorizedBinderLogic(address logic, bool authorized) external;
     function setScaleOfBalanceAuthority(address previousScale, address newScale) external;
+    function setItemUseRouter(address previousRouter, address newRouter) external;
     function CONFIG_ROLE() external view returns (bytes32);
     function hasRole(bytes32 role, address account) external view returns (bool);
 

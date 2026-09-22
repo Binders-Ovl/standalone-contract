@@ -5,7 +5,7 @@ import "forge-std/Test.sol";
 import "@openzeppelin/contracts-4.8/proxy/ERC1967/ERC1967Proxy.sol";
 import "../modular/BinderData.sol";
 import "../modular/BinderSkills.sol";
-import "../modular/Book0fArts.sol";
+import "../modular/shelf/Book0fArts.sol";
 import "../modular/supportContract/binderIds.sol";
 import "../modular/supportContract/CentralConsole.sol";
 import "../modular/supportContract/Errors.sol";

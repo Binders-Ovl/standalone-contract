@@ -12,6 +12,8 @@ import "./supportContract/binderStructs.sol";
 import "./supportContract/binderIds.sol";
 import "./interfaces/IBinderData.sol";
 import "./interfaces/IBook0fLife.sol";
+import "./interfaces/IBinderInventory.sol";
+import "./libraries/StatAllocationLib.sol";
 
 /**
  * Struct for Stats - Class Config - FUsionRequest
@@ -35,6 +37,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     IBook0fLife public book0fLife;
     IEntropyV2 public entropy;
     address public entropyProvider;
+    IBinderInventory public binderInventory;
 
     uint256 public nextFusionId;
     uint256 public fusionCost = 0.01 ether;
@@ -70,6 +73,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     event Book0fLifeUpdated(address newFusionLibrary);
     event AdvancedFusionRequested(uint256 fusionId, address user, uint256[] nftIds, address[] catalysts); // Placeholder for Advanced fusion emission
     event NativeFundsWithdrawn(address indexed recipient, uint256 amount);
+    event BinderInventoryUpdated(address indexed inventory);
 
     error IdenticalFusionTokens(uint256 tokenId);
     error FusionTokenNotReady(uint256 tokenId);
@@ -80,6 +84,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
     error UnauthorizedFusionRescue(uint256 fusionId, address caller);
     error PendingFusionsPreventBinderDataChange(uint256 pendingCount);
     error InvalidFusionDependency(address dependency);
+    error FusionInventoryNotEmpty(uint256 tokenId);
 
     constructor(
         address binderData_,
@@ -117,6 +122,10 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
 
         _requireFusionReady(nftId1);
         _requireFusionReady(nftId2);
+        if (address(binderInventory) != address(0)) {
+            if (binderInventory.hasInventory(nftId1)) revert FusionInventoryNotEmpty(nftId1);
+            if (binderInventory.hasInventory(nftId2)) revert FusionInventoryNotEmpty(nftId2);
+        }
         (uint256 class1, uint256 class2) = _sortMi(binderData.getNFTClass(nftId1), binderData.getNFTClass(nftId2));
         binderStructs.FusionRecipe memory recipe = book0fLife.getFusionRecipe(class1, class2);
         if (recipe.outcomes.length == 0) revert FusionRecipeUnavailable(class1, class2);
@@ -246,48 +255,6 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         }
     }
 
-    // 4. Allocate Stats to riteFusion Function
-    function _allocateStats(binderStructs.ClassConfig memory config, bytes32 seed)
-        internal
-        pure
-        returns (binderStructs.StaticStats memory stats)
-    {
-        stats = binderStructs.StaticStats({stats: config.minStats});
-        bytes memory entropyBytes = abi.encodePacked(seed);
-        uint8[8] memory statOrder = _generateAllocationOrder(seed);
-        uint8[32] memory byteOrder = _generateBytesOrder(seed);
-        uint8 usedBytes = 0;
-        uint16 remainingPoints = config.totalPoints;
-
-        while (remainingPoints > 0 && usedBytes < 32) {
-            for (uint8 i = 0; i < 8 && remainingPoints > 0; i++) {
-                if (usedBytes >= 32) break;
-                uint8 statIndex = statOrder[i];
-                uint8 byteIndex = byteOrder[usedBytes++];
-                uint8 randByte = uint8(entropyBytes[byteIndex]);
-
-                uint8 current = stats.stats[statIndex];
-                uint16 maxAdd = uint16(config.maxStats[statIndex]) - current;
-                if (maxAdd == 0) continue;
-                uint8 alloc = uint8(randByte % (maxAdd + 1));
-                alloc = alloc < remainingPoints ? alloc : uint8(remainingPoints);
-                stats.stats[statIndex] = current + alloc;
-                remainingPoints -= alloc;
-            }
-        }
-
-        while (remainingPoints > 0) {
-            for (uint256 i = 0; i < 8 && remainingPoints > 0; i++) {
-                uint8 statIndex = statOrder[i];
-                uint8 current = stats.stats[statIndex];
-                uint16 maxAdd = uint16(config.maxStats[statIndex]) - current;
-                if (maxAdd == 0) continue;
-                stats.stats[statIndex] = current + 1;
-                remainingPoints--;
-            }
-        }
-    }
-
     /* Internal Helper Functions */
 
     // Core | Helper Emit function because the @dev dumb enough to manage the stack depth of entropyCallback
@@ -340,7 +307,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         bytes32 statSeed = keccak256(abi.encodePacked(entropyBytes, "STATS"));
         binderStructs.ClassConfig memory config;
         (className, rarityId, rarityName, config) = _getTargetMetadata(targetClass);
-        stats = _allocateStats(config, statSeed);
+        stats = StatAllocationLib.allocate(config, statSeed);
         dynamicStats = _buildDynStats(stats, config);
     }
 
@@ -355,25 +322,6 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         return binderData._mint4Fusion(user, targetClass, className, rarityId, rarityName, stats, dynamicStats);
     }
 
-    // Helper Functions to generate allocation order and byte order for allocateStats function
-    function _generateAllocationOrder(bytes32 seed) private pure returns (uint8[8] memory order) {
-        order = [0, 1, 2, 3, 4, 5, 6, 7];
-        for (uint8 i = 7; i > 0; i--) {
-            uint8 j = uint8(seed[i]) % (i + 1);
-            (order[i], order[j]) = (order[j], order[i]);
-        }
-    }
-
-    function _generateBytesOrder(bytes32 seed) private pure returns (uint8[32] memory order) {
-        for (uint8 i = 0; i < 32; i++) {
-            order[i] = i;
-        }
-        for (uint8 i = 31; i > 0; i--) {
-            uint8 j = uint8(seed[i]) % (i + 1);
-            (order[i], order[j]) = (order[j], order[i]);
-        }
-    }
-
     // InternalHelper function for multipleOut-cum probabilities
     function _selectOutcome(binderStructs.FusionOutcome[] memory outcomes, bytes32 seed)
         internal
@@ -386,7 +334,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         uint256 totalWeight = 0;
 
         // sum total weight
-        for (uint8 i = 0; i < outcomes.length; i++) {
+        for (uint256 i = 0; i < outcomes.length; i++) {
             totalWeight += outcomes[i].multiProbChance;
         }
         require(totalWeight > 0, "Invalid Weight");
@@ -394,7 +342,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         uint256 roll = uint256(outcomeSeed) % totalWeight;
         uint256 cum = 0;
 
-        for (uint8 i = 0; i < outcomes.length; i++) {
+        for (uint256 i = 0; i < outcomes.length; i++) {
             cum += outcomes[i].multiProbChance;
             if (roll < cum) {
                 return outcomes[i].outcomeClassId;
@@ -450,70 +398,24 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
         if (!state.idle || !state.readyToArm) revert FusionTokenNotReady(tokenId);
     }
 
+    /// @notice Opt-in inventory guard. The configured protocol authority owns this narrow dependency.
+    function setBinderInventory(address inventory) external onlyRole(FUSION_OVERLORD) {
+        if (
+            inventory.code.length == 0
+                || (address(binderInventory) != address(0) && address(binderInventory) != inventory)
+        ) {
+            revert InvalidFusionDependency(inventory);
+        }
+        binderInventory = IBinderInventory(inventory);
+        emit BinderInventoryUpdated(inventory);
+    }
+
     // Enforce class order to ensure recipe lookup is consistent with Book0fLife formart
     // Book0fLife assume class1 < class2 for all recipe keys
     // Tobe used in normal fusion with 2 Nft
     function _sortMi(uint256 a, uint256 b) internal pure returns (uint256, uint256) {
         return a < b ? (a, b) : (b, a);
     }
-
-    /*
-    // This will not be used anytime soon please ignore
-    // Sorting Hash of Class IDs to prevent duplicate Recipes to be used in riteFusion Function for advance FUSION
-    // TODO : Implement this function lateron down the road, now just act as placeholder and reminder
-    // bubble sort expected not something big
-    function _sortedHash(uint256[] memory input, address[] memory erc20s) internal pure returns (bytes32) {
-       uint256 n = input.length;
-       for (uint i = 0; i < n; i++){
-            for (uint j = i+1; j < n; j++){
-                if (input[i] > input [j]) {
-                    (input[i], input[j]) = (input[j], input[i]);
-                }
-            }
-       }
-
-        return keccak256(abi.encodePacked(input, erc20s));
-    }
-
-    // Another STUB for advance FUSION
-    function advanceFuse(uint256[] memory nftIds, ERC20Input[] memory catalysts) external payable nonReentrant whenNotPaused {
-
-        uint256 totalCost = entropy.getFeeV2(entropyProvider, 0) + fusionCost;
-        require(msg.value >= totalCost, "Not enough gold my lord");
-        require(nftIds.length >= 3, "Invalid number of NFTs");
-
-        // 1. Handling Catalyst Transfer
-        address[] memory catalystsAddrs = new address[](catalysts.length);
-        for (uint i = 0; i < catalysts.length; i++) {
-            IERC20(catalysts[i].token).transferFrom(msg.sender, address(this), catalysts[i].amount);
-            catalystsAddrs[i] = catalysts[i].token;
-        }
-
-        // 2. Handling NFT Transfer
-        uint256[] memory classIds = new uint256[](nftIds.length);
-        for (uint i = 0; i < nftIds.length; i++) {
-            require(binderData.ownerOf(nftIds[i]) == msg.sender, "Cannot sacrifice what u dont own");
-            binderData.safeTransferFrom(msg.sender, address(this), nftIds[i]);
-            classIds[i] = binderData.getNFTClass(nftIds[i]);
-        }
-
-        // 3. Generating Sorted Reciepe Hash
-        bytes32 recipeHash = _sortedHash(classIds, catalystsAddrs);
-
-        // 4. Processing Entropy Request
-        uint256 fusionId = ++nextFusionId;
-        _fusionRequestAdvanced[fusionId] = AdvancedFusionRequest({
-            user: msg.sender,
-            nftIds: nftIds,
-            recipeHash: recipeHash,
-            resolved: false
-        });
-
-        _processEntropyRequest(fusionId);
-
-        emit AdvancedFusionRequested(fusionId, msg.sender, nftIds, catalystsAddrs);
-    }
-    */
 
     /* Admin Functions */
     // Less Likely to be used, used to update BinderData.sol and Book0fLife.sol

@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 import "../modular/BinderData.sol";
-import "../modular/Book0fLife.sol";
+import "../modular/shelf/Book0fLife.sol";
 import "../modular/ScaleOfBalance.sol";
 import "../modular/supportContract/CentralConsole.sol";
 import "../modular/supportContract/Errors.sol";
@@ -61,6 +61,17 @@ contract ScaleOfBalanceClassCreationTest is Test {
 
         vm.expectRevert(bytes("Fusion stat capacity exceeds 254"));
         book0fLife.addNewClass(4, "Too Large", 1, _fusionCapacityConfig(255), 1);
+    }
+
+    function testLargeStatCapacityDoesNotOverflowBalancePercentage() public {
+        binderStructs.ClassConfig memory cfg = _fusionCapacityConfig(254);
+        cfg.totalPoints = 1_000;
+        scale.addNewClass(1, "Wide Stats", 1, cfg);
+        assertEq(book0fLife.getClassConfig(1).totalPoints, 1_000);
+        cfg.totalPoints = 1_100;
+        scale.updateClassConfig(1, cfg);
+        assertEq(binderData.classVersion(1), 2);
+        assertEq(book0fLife.getClassConfig(1).totalPoints, 1_100);
     }
 
     function testConsoleScaleCutoverMovesBothTargetRolesAndLeavesConsoleConfigured() public {

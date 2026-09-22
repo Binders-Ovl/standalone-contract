@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 import "../modular/BinderData.sol";
-import "../modular/Book0fLife.sol";
+import "../modular/shelf/Book0fLife.sol";
 import "../modular/FusionMinter.sol";
 import "../modular/supportContract/CentralConsole.sol";
 import "../modular/supportContract/binderIds.sol";
@@ -155,6 +155,20 @@ contract FusionLifecycleTest is Test {
         (,,,, uint64 sequence,) = fusion.getFusionRequest(fusionId);
         entropy.resolve(fusion, PROVIDER, sequence, bytes32(0));
 
+        assertEq(binderData.ownerOf(3), ALICE);
+    }
+
+    function testFusionSupports256ConfiguredOutcomes() public {
+        uint256[] memory outcomes = new uint256[](256);
+        uint16[] memory weights = new uint16[](256);
+        for (uint256 i; i < 256; ++i) {
+            outcomes[i] = 1;
+            weights[i] = i == 255 ? 55 : 39;
+        }
+        life.setFusionRecipe(1, 2, outcomes, weights, 10_000);
+        uint256 fusionId = _requestFusion();
+        (,,,, uint64 sequence,) = fusion.getFusionRequest(fusionId);
+        entropy.resolve(fusion, PROVIDER, sequence, bytes32(0));
         assertEq(binderData.ownerOf(3), ALICE);
     }
 

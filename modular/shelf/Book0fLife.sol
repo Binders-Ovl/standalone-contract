@@ -2,8 +2,8 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts-4.8/access/AccessControl.sol";
-import "./supportContract/binderStructs.sol";
-import "./interfaces/IAllegianceRegistry.sol";
+import "../supportContract/binderStructs.sol";
+import "../interfaces/IAllegianceRegistry.sol";
 
 /// @notice Canonical class configuration, rarity registry, and mint-pool index.
 /// @dev A class has one rarity but may belong to many non-General nation pools.
