@@ -8,8 +8,21 @@ import "./interfaces/IBook0fLife.sol";
 import "./interfaces/IBook0fArts.sol";
 import "./interfaces/IBook0fRealms.sol";
 import "./supportContract/ItemBookConfigurator.sol";
+import "./supportContract/GrowthBookConfigurator.sol";
 
-contract ScaleOfBalance is AccessControl, ItemBookConfigurator {
+contract ScaleOfBalance is AccessControl, ItemBookConfigurator, GrowthBookConfigurator {
+    Book0fGrowth public book0fGrowth;
+
+    function setBook0fGrowth(address book) external onlyRole(CONFIG_ROLE) {
+        require(book.code.length != 0, "Invalid book");
+        book0fGrowth = Book0fGrowth(book);
+    }
+
+    function _growthBookForConfig() internal view override onlyRole(DEFAULT_ADMIN_ROLE) returns (Book0fGrowth) {
+        require(address(book0fGrowth) != address(0), "Book not configured");
+        return book0fGrowth;
+    }
+
     bytes32 public constant CONFIG_ROLE = keccak256("CONFIG_ROLE");
     IBinderData public binderData;
     IBook0fLife public book0fLife;

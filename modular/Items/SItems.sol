@@ -18,9 +18,10 @@ contract SItems is ItemCollectionBase, ERC1155C {
         ERC1155C("")
     {}
 
-    function mintToWallet(address to, uint16 sItemId, uint128 amount, bytes32 provenance) external onlyIssuer {
+    function mintToWallet(address to, uint16 sItemId, uint128 amount, bytes32 provenance) external {
+        bool snapshotted = _authorizeWalletMint(to, sItemId, amount, provenance);
         _requireInventoryRoute(address(0), to);
-        if (!book.isSItemEnabled(sItemId) || amount == 0) revert DisabledSItem(sItemId);
+        if ((!snapshotted && !book.isSItemEnabled(sItemId)) || amount == 0) revert DisabledSItem(sItemId);
         _mint(to, sItemId, amount, "");
         emit SItemIssued(sItemId, amount, to, provenance);
     }

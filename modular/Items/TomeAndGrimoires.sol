@@ -20,13 +20,10 @@ contract TomeAndGrimoires is ItemCollectionBase, ERC721C {
         ERC721C("Binders Tomes", "BTOME")
     {}
 
-    function mintToWallet(address to, uint16 tomeId, bytes32 provenance)
-        external
-        onlyIssuer
-        returns (uint256 tokenId)
-    {
+    function mintToWallet(address to, uint16 tomeId, bytes32 provenance) external returns (uint256 tokenId) {
+        bool snapshotted = _authorizeWalletMint(to, tomeId, 1, provenance);
         _requireInventoryRoute(address(0), to);
-        if (!book.isTomeEnabled(tomeId)) revert DisabledTome(tomeId);
+        if (!snapshotted && !book.isTomeEnabled(tomeId)) revert DisabledTome(tomeId);
         tokenId = ++_nextTokenId;
         _tomeIdOfToken[tokenId] = tomeId;
         _safeMint(to, tokenId);

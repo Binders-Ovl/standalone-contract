@@ -26,11 +26,131 @@ import "../interfaces/ICreatorTokenTransferValidatorV5.sol";
 import "@openzeppelin/contracts-4.8/access/IAccessControl.sol";
 import "./WiringDiagnostics.sol";
 import "./ItemBookConfigurator.sol";
+import "./GrowthBookConfigurator.sol";
+import "../growth/Training.sol";
+import "../growth/Quest.sol";
+import "../growth/BinderGrowth.sol";
 
 /// @notice Canonical Binders module registry and configuration control plane.
 /// @dev It deliberately has no arbitrary call primitive and owns no NFT, Book,
 /// learned-skill, or battle gameplay state. BinderData is bound once at deployment.
-contract CentralConsole is AccessControl, ICentralConsole, ItemBookConfigurator {
+contract CentralConsole is AccessControl, ICentralConsole, ItemBookConfigurator, GrowthBookConfigurator {
+    address public override binderGrowth;
+    address public override book0fGrowth;
+    address public override training;
+    address public override quest;
+
+    error InvalidGrowthWiring();
+
+    function configureGrowthSystem(address growthBook, address ledger, address trainingAddress, address questAddress)
+        external
+        onlyRole(CONFIG_ROLE)
+    {
+        if (
+            growthBook.code.length == 0 || ledger.code.length == 0 || trainingAddress.code.length == 0
+                || questAddress.code.length == 0 || binderInventory == address(0) || scaleOfBalance == address(0)
+                || (binderGrowth != address(0) && binderGrowth != ledger)
+                || (book0fGrowth != address(0) && book0fGrowth != growthBook)
+        ) revert InvalidGrowthWiring();
+        _setModule(BinderIds.MODULE_BINDER_GROWTH, binderGrowth, ledger);
+        _setModule(BinderIds.MODULE_BOOK_OF_GROWTH, book0fGrowth, growthBook);
+        _setModule(BinderIds.MODULE_TRAINING, training, trainingAddress);
+        _setModule(BinderIds.MODULE_QUEST, quest, questAddress);
+        binderGrowth = ledger;
+        book0fGrowth = growthBook;
+        training = trainingAddress;
+        quest = questAddress;
+        Book0fGrowth(growthBook).setAuthorities(address(this), scaleOfBalance);
+        IScaleOfBalance(scaleOfBalance).setBook0fGrowth(growthBook);
+        IBinderInventory(binderInventory).setStatsView(ledger);
+        itemStatsView = ledger;
+        IBinderData(binderData).setActivityController(BinderIds.ACTIVITY_TRAINING, trainingAddress);
+        IBinderData(binderData).setActivityController(BinderIds.ACTIVITY_QUEST, questAddress);
+        activityModule[BinderIds.ACTIVITY_TRAINING] = trainingAddress;
+        activityModule[BinderIds.ACTIVITY_QUEST] = questAddress;
+        IItemCollection(equipment).approveQuestController(questAddress);
+        IItemCollection(tomeAndGrimoires).approveQuestController(questAddress);
+        IItemCollection(sItems).approveQuestController(questAddress);
+        if (!isGrowthWired()) revert InvalidGrowthWiring();
+    }
+
+    function _growthBookForConfig() internal view override onlyRole(CONFIG_ROLE) returns (Book0fGrowth) {
+        if (book0fGrowth == address(0)) revert InvalidGrowthWiring();
+        return Book0fGrowth(book0fGrowth);
+    }
+
+    function setArtRewardPool(uint32 poolId, uint32[] calldata artIds) external onlyRole(CONFIG_ROLE) {
+        IBook0fArts(book0fArts).setRewardPool(poolId, artIds);
+    }
+
+    /// @notice 0=coherent; 1=missing, 2=core/items, 3=Book/Scale, 4=ledger,
+    /// 5=controllers, 6=entropy, 7=reward routes, 8=activity/stats view.
+    function growthWiringError() external view returns (uint8) {
+        if (binderGrowth == address(0) || book0fGrowth == address(0) || training == address(0) || quest == address(0)) {
+            return 1;
+        }
+        ItemWiringStatus memory itemStatus = this.getItemWiringStatus();
+        if (
+            !wiringDiagnostics.isFullyWired(_wiringStatus()) || !itemStatus.bookAuthorityMatch
+                || !itemStatus.inventoryDependenciesMatch || !itemStatus.collectionsMatch
+                || !itemStatus.collectionOwnershipMatch || !itemStatus.routerDependenciesMatch
+                || !itemStatus.skillsDependenciesMatch || (goldAsset != address(0) && goldAsset.code.length == 0)
+        ) return 2;
+        Book0fGrowth rules = Book0fGrowth(book0fGrowth);
+        if (
+            rules.centralConsole() != address(this) || rules.scaleOfBalance() != scaleOfBalance
+                || IScaleOfBalance(scaleOfBalance).book0fGrowth() != book0fGrowth
+        ) return 3;
+        BinderGrowth ledger = BinderGrowth(binderGrowth);
+        if (
+            ledger.centralConsole() != address(this) || address(ledger.binderData()) != binderData
+                || address(ledger.inventory()) != binderInventory
+        ) return 4;
+        if (!_growthControllerMatches(training, 3) || !_growthControllerMatches(quest, 4)) return 5;
+        Training train = Training(training);
+        Quest questModule = Quest(quest);
+        if (
+            address(train.entropy()) != address(questModule.entropy())
+                || train.entropyProvider() != questModule.entropyProvider() || address(train.entropy()).code.length == 0
+                || train.entropyProvider() == address(0)
+        ) return 6;
+        if (
+            address(questModule.life()) != book0fLife || address(questModule.items()) != book0fItems
+                || address(questModule.equipment()) != equipment || address(questModule.tomes()) != tomeAndGrimoires
+                || address(questModule.sItems()) != sItems || !IItemCollection(equipment).questControllers(quest)
+                || !IItemCollection(tomeAndGrimoires).questControllers(quest)
+                || !IItemCollection(sItems).questControllers(quest)
+        ) return 7;
+        if (
+            IBinderData(binderData).getActivityController(3) != training
+                || IBinderData(binderData).getActivityController(4) != quest
+                || address(IBinderInventory(binderInventory).statsView()) != binderGrowth || itemStatsView != binderGrowth
+        ) return 8;
+        return 0;
+    }
+
+    function isGrowthWired() public view override returns (bool) {
+        try this.growthWiringError() returns (uint8 errorCode) {
+            return errorCode == 0;
+        } catch {
+            return false;
+        }
+    }
+
+    function _growthControllerMatches(address controller, uint8 kind) private view returns (bool) {
+        ActivityEscrow module = ActivityEscrow(controller);
+        return address(module.centralConsole()) == address(this) && address(module.binderData()) == binderData
+            && address(module.book()) == book0fGrowth && address(module.growth()) == binderGrowth
+            && address(module.skills()) == binderSkills && address(module.arts()) == book0fArts
+            && module.activityKind() == kind;
+    }
+
+    function _requireGrowthDependencyChangeSafe(address previous, address next) private view {
+        if (binderGrowth != address(0) && previous != next && IBinderData(binderData).activeGrowthCount() != 0) {
+            revert InvalidGrowthWiring();
+        }
+    }
+
     bytes32 public constant CONFIG_ROLE = keccak256("CONFIG_ROLE");
 
     address public immutable override binderData;
@@ -132,6 +252,7 @@ contract CentralConsole is AccessControl, ICentralConsole, ItemBookConfigurator 
     }
 
     function _validateBinderSkills(address moduleAddress) internal view {
+        _requireGrowthDependencyChangeSafe(binderSkills, moduleAddress);
         _requireContract(BinderIds.MODULE_BINDER_SKILLS, moduleAddress);
         address skillsBinderData;
         try IBinderSkills(moduleAddress).binderData() returns (address resolvedBinderData) {
@@ -184,6 +305,7 @@ contract CentralConsole is AccessControl, ICentralConsole, ItemBookConfigurator 
     }
 
     function setBook0fLife(address moduleAddress) external override onlyRole(CONFIG_ROLE) {
+        _requireGrowthDependencyChangeSafe(book0fLife, moduleAddress);
         _requireContract(BinderIds.MODULE_BOOK_OF_LIFE, moduleAddress);
         if (binderMetadata != address(0) && IBinderMetadata(binderMetadata).book0fLife() != moduleAddress) {
             revert CanonicalPairMismatch(moduleAddress, IBinderMetadata(binderMetadata).book0fLife());
@@ -199,6 +321,7 @@ contract CentralConsole is AccessControl, ICentralConsole, ItemBookConfigurator 
     }
 
     function setBook0fArts(address moduleAddress) external override onlyRole(CONFIG_ROLE) {
+        _requireGrowthDependencyChangeSafe(book0fArts, moduleAddress);
         _requireContract(BinderIds.MODULE_BOOK_OF_ARTS, moduleAddress);
         if (binderMetadata != address(0) && IBinderMetadata(binderMetadata).book0fArts() != moduleAddress) {
             revert CanonicalPairMismatch(moduleAddress, IBinderMetadata(binderMetadata).book0fArts());
@@ -215,6 +338,7 @@ contract CentralConsole is AccessControl, ICentralConsole, ItemBookConfigurator 
         external
         onlyRole(CONFIG_ROLE)
     {
+        _requireGrowthDependencyChangeSafe(book0fLife, newBook);
         _requireContract(BinderIds.MODULE_BOOK_OF_LIFE, newBook);
         _requireMetadataDependencies(compatibleMetadata, newBook, book0fArts);
         _requireContract(BinderIds.MODULE_FUSION_MINTER, compatibleFusion);
@@ -252,6 +376,7 @@ contract CentralConsole is AccessControl, ICentralConsole, ItemBookConfigurator 
     /// @notice Cuts over Book0fArts and its immutable renderer dependency in
     /// the same transaction, so the registry never advertises a mismatched UI.
     function configureBook0fArts(address newBook, address compatibleMetadata) external onlyRole(CONFIG_ROLE) {
+        _requireGrowthDependencyChangeSafe(book0fArts, newBook);
         _requireContract(BinderIds.MODULE_BOOK_OF_ARTS, newBook);
         _requireMetadataDependencies(compatibleMetadata, book0fLife, newBook);
         IBinderData(binderData).setBinderMetadata(compatibleMetadata);
@@ -405,6 +530,11 @@ contract CentralConsole is AccessControl, ICentralConsole, ItemBookConfigurator 
     }
 
     function _configureScaleTargets(address scale) private {
+        if (book0fGrowth != address(0)) {
+            _requireScaleConfigAuthority(scale);
+            IScaleOfBalance(scale).setBook0fGrowth(book0fGrowth);
+            Book0fGrowth(book0fGrowth).setAuthorities(address(this), scale);
+        }
         if (book0fItems != address(0) && IScaleOfBalance(scale).book0fItems() != book0fItems) {
             _requireScaleConfigAuthority(scale);
             IScaleOfBalance(scale).setBook0fItems(book0fItems);
@@ -584,6 +714,7 @@ contract CentralConsole is AccessControl, ICentralConsole, ItemBookConfigurator 
         ITomeAndGrimoires(tomeAddress).setInventory(inventoryAddress);
         ISItems(sItemAddress).setInventory(inventoryAddress);
         inventory.setStatsView(statsViewAddress);
+        if (binderGrowth != address(0) && statsViewAddress != binderGrowth) revert InvalidGrowthWiring();
         inventory.setBinderSkills(binderSkills);
         inventory.setItemUseRouter(routerAddress);
         IBinderData(binderData).setItemUseRouter(itemUseRouter, routerAddress);
@@ -701,7 +832,8 @@ contract CentralConsole is AccessControl, ICentralConsole, ItemBookConfigurator 
     function setActivityModule(uint8 activityId, address moduleAddress) external override onlyRole(CONFIG_ROLE) {
         if (
             activityId == BinderIds.ACTIVITY_IDLE || activityId == BinderIds.ACTIVITY_BATTLE
-                || activityId == BinderIds.ACTIVITY_FUSION
+                || activityId == BinderIds.ACTIVITY_FUSION || activityId == BinderIds.ACTIVITY_TRAINING
+                || activityId == BinderIds.ACTIVITY_QUEST
         ) revert InvalidActivityModuleId(activityId);
         _requireContract(bytes32(uint256(activityId)), moduleAddress);
 
@@ -712,6 +844,10 @@ contract CentralConsole is AccessControl, ICentralConsole, ItemBookConfigurator 
     }
 
     function canonicalModule(bytes32 moduleId) external view override returns (address) {
+        if (moduleId == BinderIds.MODULE_BINDER_GROWTH) return binderGrowth;
+        if (moduleId == BinderIds.MODULE_BOOK_OF_GROWTH) return book0fGrowth;
+        if (moduleId == BinderIds.MODULE_TRAINING) return training;
+        if (moduleId == BinderIds.MODULE_QUEST) return quest;
         if (moduleId == BinderIds.MODULE_BINDER_DATA) return binderData;
         if (moduleId == BinderIds.MODULE_BINDER_SKILLS) return binderSkills;
         if (moduleId == BinderIds.MODULE_BINDER_METADATA) return binderMetadata;
@@ -743,7 +879,8 @@ contract CentralConsole is AccessControl, ICentralConsole, ItemBookConfigurator 
                     || moduleAddress == battleFactory || moduleAddress == allegianceRegistry || moduleAddress == book0fItems
                     || moduleAddress == binderInventory || moduleAddress == equipment || moduleAddress == tomeAndGrimoires
                     || moduleAddress == sItems || moduleAddress == itemUseRouter || moduleAddress == itemMetadataBuilder
-                    || moduleAddress == itemStatsView
+                    || moduleAddress == itemStatsView || moduleAddress == binderGrowth || moduleAddress == book0fGrowth
+                    || moduleAddress == training || moduleAddress == quest
             );
     }
 

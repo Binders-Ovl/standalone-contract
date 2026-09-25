@@ -10,6 +10,7 @@ import "./supportContract/binderIds.sol";
 import "./supportContract/binderStructs.sol";
 import "./interfaces/IBinderMetadata.sol";
 import "./interfaces/IBattleFactory.sol";
+import "./interfaces/IGrowthActivity.sol";
 
 /// @notice ERC-721 NFT-instance database and authoritative activity/transfer state.
 contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
@@ -85,6 +86,13 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     mapping(address => uint256) public activeFusionCountByMinter;
     mapping(uint256 => address) public activeFusionMinter;
     mapping(address => bool) public authorizedBinderLogic;
+    mapping(uint256 => address) public activeGrowthController;
+    mapping(uint256 => bytes32) public activeGrowthActivity;
+    uint256 public activeGrowthCount;
+    mapping(bytes32 => bool) private _questVitalsSettled;
+    mapping(bytes32 => bool) private _questRewardMinted;
+
+    error InvalidGrowthActivity();
 
     mapping(uint256 => binderStructs.NFTMetadata) private _tokenMetadata;
     mapping(uint256 => uint16) public classVersion;
@@ -154,9 +162,9 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         }
 
         uint256 tokenId = _tokenIdCounter++;
-        _safeMint(recipient, tokenId);
         metadata.name = string(abi.encodePacked(metadata.name, "#", Strings.toString(tokenId)));
         _tokenMetadata[tokenId] = metadata;
+        _safeMint(recipient, tokenId);
         return tokenId;
     }
 
@@ -217,6 +225,9 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     /// @dev Soft activities retain player ownership. Custody activities must transfer
     /// player -> controller first while Idle, then call this in the same transaction.
     function startActivity(uint256 tokenId, uint8 activityId, uint48 lockedUntil) external {
+        if (activityId == BinderIds.ACTIVITY_TRAINING || activityId == BinderIds.ACTIVITY_QUEST) {
+            revert InvalidGrowthActivity();
+        }
         _requireActivityController(activityId, msg.sender);
         _requireCanStartActivity(tokenId);
         _activityState[tokenId] = binderStructs.ActivityState({activityId: activityId, lockedUntil: lockedUntil});
@@ -235,6 +246,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
     /// @notice Ends the caller's currently active activity. ReadyToArm is intentionally not checked on exit.
     /// @dev Custody activities must call this before custody -> player transfer in the same transaction.
     function endActivity(uint256 tokenId) external {
+        if (activeGrowthController[tokenId] != address(0)) revert InvalidGrowthActivity();
         _requireToken(tokenId);
         uint8 activityId = _activityState[tokenId].activityId;
         if (activityId == 0) revert UnitAlreadyIdle(tokenId);
@@ -250,6 +262,7 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
 
     /// @notice Emergency recovery for an abandoned or faulty activity controller.
     function forceClearActivity(uint256 tokenId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (activeGrowthController[tokenId] != address(0)) revert InvalidGrowthActivity();
         _requireToken(tokenId);
         uint8 activityId = _activityState[tokenId].activityId;
         if (activityId == 0) revert UnitAlreadyIdle(tokenId);
@@ -268,6 +281,110 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
         address oldController = _activityController[activityId];
         _activityController[activityId] = controller;
         emit ActivityControllerUpdated(activityId, oldController, controller);
+    }
+
+    /// @notice Lock before the receiver callback; no public transfer path bypasses this binding.
+    function escrowGrowthActivity(
+        uint256 tokenId,
+        address beneficiary,
+        uint8 activityKind,
+        bytes32 activityId,
+        uint48 maturity
+    ) external {
+        if (activityKind != BinderIds.ACTIVITY_TRAINING && activityKind != BinderIds.ACTIVITY_QUEST) {
+            revert InvalidGrowthActivity();
+        }
+        _requireActivityController(activityKind, msg.sender);
+        _requireCanStartActivity(tokenId);
+        if (
+            ownerOf(tokenId) != beneficiary || !_isApprovedOrOwner(msg.sender, tokenId)
+                || _tokenMetadata[tokenId].dynamicStats.currentHP == 0 || activityId == bytes32(0)
+        ) {
+            revert InvalidGrowthActivity();
+        }
+        (uint256 proofToken, address proofOwner, uint8 kind, uint8 phase) =
+            IGrowthActivity(msg.sender).activityProof(activityId);
+        if (
+            proofToken != tokenId || proofOwner != beneficiary || phase != 1
+                || (activityKind == BinderIds.ACTIVITY_QUEST ? kind != 4 : (kind == 0 || kind > 3))
+        ) {
+            revert InvalidGrowthActivity();
+        }
+        activeGrowthController[tokenId] = msg.sender;
+        ++activeGrowthCount;
+        activeGrowthActivity[tokenId] = activityId;
+        _activityState[tokenId] = binderStructs.ActivityState(activityKind, maturity);
+        // _transfer has no receiver interaction. The binding is already in place when
+        // _safeTransfer invokes onERC721Received below.
+        _safeTransfer(beneficiary, msg.sender, tokenId, "");
+        emit ActivityStarted(tokenId, activityKind, maturity);
+        _emitMetadataUpdate(tokenId);
+    }
+
+    function releaseGrowthActivity(uint256 tokenId, bytes32 activityId) external {
+        (address beneficiary, uint8 phase) = _requireGrowthBinding(tokenId, activityId);
+        if (phase != 5 && phase != 6) revert InvalidGrowthActivity();
+        uint8 kind = _activityState[tokenId].activityId;
+        --activeGrowthCount;
+        delete activeGrowthController[tokenId];
+        delete activeGrowthActivity[tokenId];
+        delete _activityState[tokenId];
+        _safeTransfer(msg.sender, beneficiary, tokenId, "");
+        emit ActivityEnded(tokenId, kind);
+        _emitMetadataUpdate(tokenId);
+    }
+
+    /// @notice Quest alone may persist injury/death for its own settled, still-escrowed record.
+    function settleQuestVitals(uint256 tokenId, bytes32 activityId, bool dead, uint16 damage) external {
+        (, uint8 phase) = _requireGrowthBinding(tokenId, activityId);
+        if (
+            phase != 4 || _activityState[tokenId].activityId != BinderIds.ACTIVITY_QUEST
+                || _questVitalsSettled[activityId]
+        ) revert InvalidGrowthActivity();
+        _questVitalsSettled[activityId] = true;
+        binderStructs.DynamicStats storage vitals = _tokenMetadata[tokenId].dynamicStats;
+        if (dead) {
+            --activeGrowthCount;
+            vitals.currentHP = 0;
+            delete activeGrowthController[tokenId];
+            delete activeGrowthActivity[tokenId];
+            _moveToGraveyard(tokenId);
+        } else {
+            vitals.currentHP = damage >= vitals.currentHP ? 1 : vitals.currentHP - damage;
+            _emitMetadataUpdate(tokenId);
+        }
+    }
+
+    function _requireGrowthBinding(uint256 tokenId, bytes32 activityId)
+        internal
+        view
+        returns (address beneficiary, uint8 phase)
+    {
+        if (
+            activeGrowthController[tokenId] != msg.sender || activeGrowthActivity[tokenId] != activityId
+                || ownerOf(tokenId) != msg.sender
+        ) revert InvalidGrowthActivity();
+        (uint256 proofToken, address proofOwner,, uint8 proofPhase) =
+            IGrowthActivity(msg.sender).activityProof(activityId);
+        if (proofToken != tokenId || proofOwner == address(0)) revert InvalidGrowthActivity();
+        return (proofOwner, proofPhase);
+    }
+
+    function mintQuestReward(
+        uint256 parentId,
+        bytes32 activityId,
+        binderStructs.NFTMetadata calldata metadata,
+        string calldata rarityName
+    ) external returns (uint256 tokenId) {
+        (address beneficiary, uint8 phase) = _requireGrowthBinding(parentId, activityId);
+        if (
+            phase != 4 || _activityState[parentId].activityId != BinderIds.ACTIVITY_QUEST
+                || _questRewardMinted[activityId] || metadata.configVersion == 0
+        ) revert InvalidGrowthActivity();
+        _validatePermanentMetadata(metadata.classId, metadata.rarityId, metadata.staticStats, metadata.dynamicStats);
+        _questRewardMinted[activityId] = true;
+        tokenId = _mintNFT(beneficiary, metadata);
+        emit NFTMinted(beneficiary, tokenId, metadata.rarityId, rarityName, metadata.name);
     }
 
     // === Version/stat updates ===
@@ -797,7 +914,14 @@ contract BinderData is ERC721, ERC721Pausable, Ownable, AccessControl {
                 revert TokenInGraveyard(tokenId);
             }
             uint8 activityId = _activityState[tokenId].activityId;
-            if (activityId != 0) revert TokenBusy(tokenId, activityId);
+            if (activityId != 0) {
+                // Only the initial player -> bound controller transfer is allowed.
+                // Once escrowed, from == controller prevents this exception being reused.
+                address controller = activeGrowthController[tokenId];
+                if (controller == address(0) || msg.sender != controller || to != controller || from == controller) {
+                    revert TokenBusy(tokenId, activityId);
+                }
+            }
         }
         if (to == binderGraveyard && !_graveyardTransferInProgress) revert UnauthorizedGraveyardTransfer(tokenId);
         super._beforeTokenTransfer(from, to, tokenId, batchSize);

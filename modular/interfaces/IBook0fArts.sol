@@ -5,6 +5,8 @@ import "../supportContract/binderStructs.sol";
 
 /// @notice Read API for versioned Art definitions used by metadata and battle modules.
 interface IBook0fArts {
+    function getRewardPool(uint32 poolId) external view returns (uint32[] memory);
+    function setRewardPool(uint32 poolId, uint32[] calldata artIds) external;
     function BALANCE_ROLE() external view returns (bytes32);
     function setScaleOfBalanceAuthority(address previousScale, address newScale) external;
     function updateArtBalance(binderStructs.ArtDefinition calldata definition, uint256[] calldata eligibleClassIds)

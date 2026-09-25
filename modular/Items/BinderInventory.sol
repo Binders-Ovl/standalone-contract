@@ -34,6 +34,7 @@ contract BinderInventory is ReentrancyGuard, IBinderInventory {
     mapping(uint256 => InventorySlot[20]) private _slots;
     mapping(uint256 => uint8) private _occupiedSlotCount;
     mapping(uint256 => uint256) private _pendingTomeBinder;
+    mapping(uint256 => uint8[5]) private _equippedSlotPlusOne;
 
     event CollectionsConfigured(address indexed equipment, address indexed tomes, address indexed sItems);
     event StatsViewUpdated(address indexed previousView, address indexed newView);
@@ -268,12 +269,10 @@ contract BinderInventory is ReentrancyGuard, IBinderInventory {
         if (!_classAllowed(binderId, cfg.allowedClassIds) || !_statsMeet(binderId, cfg.statsReq)) {
             revert EquipmentRequirementsNotMet(binderId);
         }
-        for (uint8 i; i < MAX_INVENTORY_SLOTS; ++i) {
-            InventorySlot storage existing = _slots[binderId][i];
-            if (existing.occupied && existing.equipped && existing.equippedAs == cfg.slot) {
-                revert EquipmentAlreadyEquipped(binderId, cfg.slot);
-            }
+        if (_equippedSlotPlusOne[binderId][uint8(cfg.slot)] != 0) {
+            revert EquipmentAlreadyEquipped(binderId, cfg.slot);
         }
+        _equippedSlotPlusOne[binderId][uint8(cfg.slot)] = slot + 1;
         item.equipped = true;
         item.equippedAs = cfg.slot;
         emit EquipmentEquipped(binderId, slot, cfg.slot);
@@ -284,6 +283,7 @@ contract BinderInventory is ReentrancyGuard, IBinderInventory {
         InventorySlot storage item = _slotStorage(binderId, slot);
         if (item.family != ItemFamily.EQUIPMENT || !item.equipped) revert InvalidInventoryItem();
         item.equipped = false;
+        delete _equippedSlotPlusOne[binderId][uint8(item.equippedAs)];
         emit EquipmentUnequipped(binderId, slot);
     }
 
@@ -363,12 +363,30 @@ contract BinderInventory is ReentrancyGuard, IBinderInventory {
     }
 
     function equipmentModifiers(uint256 binderId) external view returns (int32[8] memory modifiers) {
-        for (uint8 slot; slot < MAX_INVENTORY_SLOTS; ++slot) {
-            InventorySlot storage item = _slots[binderId][slot];
-            if (!item.occupied || !item.equipped) continue;
+        for (uint8 category; category < 5; ++category) {
+            uint8 pointer = _equippedSlotPlusOne[binderId][category];
+            if (pointer == 0) continue;
+            InventorySlot storage item = _slots[binderId][pointer - 1];
             EqConfig memory cfg = book.getEq(item.libraryId);
             for (uint256 i; i < 8; ++i) {
                 modifiers[i] += int32(uint32(cfg.statsChgInc[i])) - int32(uint32(cfg.statsChgDec[i]));
+            }
+        }
+    }
+
+    /// @notice Growth only: unequip in place, with no transfer or additional inventory stack.
+    function reconcileEquipment(uint256 binderId) external {
+        if (msg.sender != address(statsView)) revert UnauthorizedCollection(msg.sender);
+        uint32[8] memory stats = statsView.statsWithGrowth(binderId);
+        for (uint8 category; category < 5; ++category) {
+            uint8 pointer = _equippedSlotPlusOne[binderId][category];
+            if (pointer == 0) continue;
+            InventorySlot storage item = _slots[binderId][pointer - 1];
+            EqConfig memory cfg = book.getEq(item.libraryId);
+            if (!_classAllowed(binderId, cfg.allowedClassIds) || !_meets(stats, cfg.statsReq)) {
+                item.equipped = false;
+                delete _equippedSlotPlusOne[binderId][category];
+                emit EquipmentUnequipped(binderId, pointer - 1);
             }
         }
     }
@@ -476,7 +494,10 @@ contract BinderInventory is ReentrancyGuard, IBinderInventory {
     }
 
     function _statsMeet(uint256 binderId, uint16[8] memory required) private view returns (bool) {
-        uint16[8] memory stats = statsView.statsWithGrowth(binderId);
+        return _meets(statsView.statsWithGrowth(binderId), required);
+    }
+
+    function _meets(uint32[8] memory stats, uint16[8] memory required) private pure returns (bool) {
         for (uint256 i; i < 8; ++i) {
             if (stats[i] < required[i]) return false;
         }

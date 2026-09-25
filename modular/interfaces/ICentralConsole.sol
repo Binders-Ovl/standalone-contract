@@ -3,6 +3,12 @@ pragma solidity ^0.8.24;
 
 /// @notice Read and configuration surface for the canonical Binders module registry.
 interface ICentralConsole {
+    function isGrowthWired() external view returns (bool);
+    function binderGrowth() external view returns (address);
+    function book0fGrowth() external view returns (address);
+    function training() external view returns (address);
+    function quest() external view returns (address);
+
     struct WiringStatus {
         bool binderDataMetadataMatch;
         bool binderSkillsPairMatch;

@@ -3,6 +3,8 @@ pragma solidity ^0.8.24;
 
 /// @notice Typed control-plane API shared by all three recognised item collections.
 interface IItemCollection {
+    function approveQuestController(address controller) external;
+    function questControllers(address controller) external view returns (bool);
     function owner() external view returns (address);
     function getTransferValidator() external view returns (address);
     function setIssuer(address issuer, bool allowed) external;

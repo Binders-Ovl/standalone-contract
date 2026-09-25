@@ -38,6 +38,7 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
     struct BattleUnit {
         address controller;
         uint8[8] baseStats;
+        uint32[8] permanentStats;
         uint16 maxHP;
         uint16 maxMP;
         uint16 currentHP;
@@ -449,6 +450,7 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         _units[tokenId] = BattleUnit({
             controller: binderData.ownerOf(tokenId),
             baseStats: metadata.staticStats.stats,
+            permanentStats: [uint32(0), 0, 0, 0, 0, 0, 0, 0],
             maxHP: metadata.dynamicStats.maxHP,
             maxMP: metadata.dynamicStats.maxMP,
             currentHP: metadata.dynamicStats.currentHP,
@@ -464,6 +466,13 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         _participantIds.push(tokenId);
         _participantIndexPlusOne[tokenId] = uint8(_participantIds.length);
         _snapshotEquipment(tokenId);
+        if (address(binderInventory) != address(0)) {
+            _units[tokenId].permanentStats = binderInventory.statsView().statsWithGrowth(tokenId);
+        } else {
+            for (uint256 i; i < 8; ++i) {
+                _units[tokenId].permanentStats[i] = metadata.staticStats.stats[i];
+            }
+        }
 
         for (uint256 index; index < loadout.length; ++index) {
             uint32 artId = loadout[index];
@@ -662,7 +671,7 @@ contract BattleProxy is Initializable, IERC721Receiver, IBattleProxyView {
         returns (uint256[8] memory stats)
     {
         for (uint256 index; index < stats.length; ++index) {
-            int256 effective = int256(uint256(unit.baseStats[index])) + int256(unit.equipmentModifiers[index]);
+            int256 effective = int256(uint256(unit.permanentStats[index])) + int256(unit.equipmentModifiers[index]);
             TimedStatModifier[] storage active = _temporaryModifiers[tokenId];
             for (uint256 modifierIndex; modifierIndex < active.length; ++modifierIndex) {
                 if (active[modifierIndex].expiresAt > block.timestamp) {

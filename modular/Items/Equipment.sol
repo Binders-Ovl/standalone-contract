@@ -20,9 +20,10 @@ contract Equipment is ItemCollectionBase, ERC721C {
         ERC721C("Binders Equipment", "BEQ")
     {}
 
-    function mintToWallet(address to, uint16 eqId, bytes32 provenance) external onlyIssuer returns (uint256 tokenId) {
+    function mintToWallet(address to, uint16 eqId, bytes32 provenance) external returns (uint256 tokenId) {
+        bool snapshotted = _authorizeWalletMint(to, eqId, 1, provenance);
         _requireInventoryRoute(address(0), to);
-        if (!book.isEqEnabled(eqId)) revert DisabledEquipment(eqId);
+        if (!snapshotted && !book.isEqEnabled(eqId)) revert DisabledEquipment(eqId);
         tokenId = ++_nextTokenId;
         _eqIdOfToken[tokenId] = eqId;
         _safeMint(to, tokenId);

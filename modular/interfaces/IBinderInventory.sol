@@ -6,8 +6,10 @@ import "./IBook0fItems.sol";
 import "./IEquipment.sol";
 import "./ITomeAndGrimoires.sol";
 import "./ISItems.sol";
+import {IItemStatsView} from "./IItemStatsView.sol";
 
 interface IBinderInventory {
+    function statsView() external view returns (IItemStatsView);
     function centralConsole() external view returns (address);
     function book() external view returns (IBook0fItems);
     function equipment() external view returns (IEquipment);
@@ -33,4 +35,5 @@ interface IBinderInventory {
     function getSlot(uint256 binderId, uint8 slot) external view returns (InventorySlot memory);
     function getSlots(uint256 binderId) external view returns (InventorySlot[20] memory);
     function equipmentModifiers(uint256 binderId) external view returns (int32[8] memory);
+    function reconcileEquipment(uint256 binderId) external;
 }

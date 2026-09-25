@@ -20,6 +20,28 @@ contract Book0fArts is AccessControl, IBook0fArts {
     mapping(uint32 => mapping(uint16 => uint256[])) private _eligibleClassIds;
     mapping(uint32 => mapping(uint16 => mapping(uint256 => bool))) private _classEligible;
     uint32[] private _artIds;
+    mapping(uint32 => uint32[]) private _rewardPools;
+
+    event RewardPoolConfigured(uint32 indexed poolId, uint32[] artIds);
+
+    function setRewardPool(uint32 poolId, uint32[] calldata artIds) external {
+        if (!hasRole(CONFIG_ROLE, msg.sender) && !hasRole(BALANCE_ROLE, msg.sender)) {
+            _checkRole(CONFIG_ROLE, msg.sender);
+        }
+        if (poolId == 0 || artIds.length > 16) revert InvalidArtDefinition();
+        for (uint256 i; i < artIds.length; ++i) {
+            _requireArt(artIds[i]);
+            for (uint256 j; j < i; ++j) {
+                if (artIds[i] == artIds[j]) revert InvalidArtDefinition();
+            }
+        }
+        _rewardPools[poolId] = artIds;
+        emit RewardPoolConfigured(poolId, artIds);
+    }
+
+    function getRewardPool(uint32 poolId) external view returns (uint32[] memory) {
+        return _rewardPools[poolId];
+    }
 
     event ArtVersionConfigured(uint32 indexed artId, uint16 indexed version, bool enabled);
     event ArtEligibilityConfigured(uint32 indexed artId, uint16 indexed version, uint256 eligibleClassCount);

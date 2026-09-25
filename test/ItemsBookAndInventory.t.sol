@@ -83,8 +83,8 @@ contract ItemsBookAndInventoryTest is Test {
         inventory.setCollections(address(this), address(this), address(this));
     }
 
-    function statsWithGrowth(uint256) external pure returns (uint16[8] memory stats) {
-        stats = [uint16(10), 10, 10, 10, 10, 10, 10, 10];
+    function statsWithGrowth(uint256) external pure returns (uint32[8] memory stats) {
+        stats = [uint32(10), 10, 10, 10, 10, 10, 10, 10];
     }
 
     function burnForProtocol(address, uint16 sItemId, uint128 amount) external {

@@ -106,3 +106,12 @@ struct InventorySlot {
     bool equipped;
     EquipmentSlot equippedAs;
 }
+
+/// @notice Bounded Quest issuance-table entry; all amounts/eligibility are captured before entropy.
+struct QuestItemReward {
+    ItemFamily family;
+    uint16 libraryId;
+    uint16 weight;
+    uint128 minAmount;
+    uint128 maxAmount;
+}

@@ -13,7 +13,7 @@ contract ItemStatsView is IItemStatsView {
         binderData = IBinderData(binderDataAddress);
     }
 
-    function statsWithGrowth(uint256 binderId) external view returns (uint16[8] memory stats) {
+    function statsWithGrowth(uint256 binderId) external view returns (uint32[8] memory stats) {
         binderStructs.NFTMetadata memory details = binderData.getNFTDetails(binderId);
         for (uint256 i; i < 8; ++i) {
             stats[i] = details.staticStats.stats[i];

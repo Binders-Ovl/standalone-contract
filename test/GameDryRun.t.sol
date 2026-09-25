@@ -53,26 +53,26 @@ contract DryRunEntropy {
 
 /// @notice Fresh isolated EVM per scenario. No RPC, live funds, or private validator deployment.
 contract GameDryRunTest is Test, DeployAndWire {
-    address private constant ALICE = address(0xA11CE);
-    address private constant BOB = address(0xB0B);
-    address private constant PROVIDER = address(0xBEEF);
-    address private constant GRAVEYARD = address(0xDEAD);
-    BinderData private data;
+    address internal constant ALICE = address(0xA11CE);
+    address internal constant BOB = address(0xB0B);
+    address internal constant PROVIDER = address(0xBEEF);
+    address internal constant GRAVEYARD = address(0xDEAD);
+    BinderData internal data;
     BinderLogic private logic;
-    BinderSkills private skills;
+    BinderSkills internal skills;
     FusionMinter private fusion;
-    CentralConsole private control;
-    Book0fLife private life;
-    Book0fItems private items;
-    BinderInventory private inventory;
-    Equipment private equipment;
-    TomeAndGrimoires private tomes;
-    SItems private sItems;
+    CentralConsole internal control;
+    Book0fLife internal life;
+    Book0fItems internal items;
+    BinderInventory internal inventory;
+    Equipment internal equipment;
+    TomeAndGrimoires internal tomes;
+    SItems internal sItems;
     ItemUseRouter private router;
-    DryRunEntropy private entropy;
+    DryRunEntropy internal entropy;
     uint256 private minted;
 
-    function setUp() public {
+    function setUp() public virtual {
         entropy = new DryRunEntropy();
         Deployment memory deployed = _deployAndWire(address(this), GRAVEYARD, address(entropy), PROVIDER, "");
         data = BinderData(deployed.binderData);
@@ -323,7 +323,7 @@ contract GameDryRunTest is Test, DeployAndWire {
         assertEq(sItems.balanceOf(ALICE, 1), withdrawn);
     }
 
-    function _mint(uint8 rarity) private returns (uint256 tokenId) {
+    function _mint(uint8 rarity) internal returns (uint256 tokenId) {
         uint256 lower = rarity == 1 ? 0 : rarity == 2 ? 7_500 : 9_000;
         uint256 upper = rarity == 1 ? 7_500 : rarity == 2 ? 9_000 : 10_000;
         bytes32 seed;
@@ -395,7 +395,7 @@ contract GameDryRunTest is Test, DeployAndWire {
         emit log_named_address("Counterfactual TBA", inventory.accountOf(tokenId));
     }
 
-    function _occupied(uint256 binderId) private view returns (uint256 count) {
+    function _occupied(uint256 binderId) internal view returns (uint256 count) {
         InventorySlot[20] memory slots = inventory.getSlots(binderId);
         for (uint256 i; i < 20; ++i) {
             if (slots[i].occupied) ++count;

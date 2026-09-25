@@ -5,6 +5,8 @@ import "../supportContract/binderStructs.sol";
 
 /// @notice Narrow configuration/read surface used by CentralConsole.
 interface IScaleOfBalance {
+    function book0fGrowth() external view returns (address);
+    function setBook0fGrowth(address book) external;
     function binderData() external view returns (address);
     function book0fLife() external view returns (address);
     function book0fArts() external view returns (address);

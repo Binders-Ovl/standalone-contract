@@ -6,6 +6,9 @@ import "./IBinderInventory.sol";
 
 /// @notice Read API for the canonical, separately stored learned-skill repertoire.
 interface IBinderSkills {
+    function eligibleActivityArt(uint256 tokenId, uint32 artId) external view returns (uint16 version, uint8 artType);
+    function grantActivityArt(bytes32 activityId, bool pattern) external returns (bool granted);
+    function pendingTomeCount(uint256 tokenId) external view returns (uint256);
     function binderData() external view returns (address);
     function centralConsole() external view returns (address);
     function book0fItems() external view returns (IBook0fItems);

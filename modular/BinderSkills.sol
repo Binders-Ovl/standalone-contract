@@ -15,6 +15,7 @@ import "./interfaces/ICentralConsole.sol";
 import "./interfaces/IBook0fArts.sol";
 import "./interfaces/IBook0fItems.sol";
 import "./interfaces/IBinderInventory.sol";
+import "./interfaces/IGrowthActivity.sol";
 import "./Items/ItemStruct.sol";
 
 /// @notice Canonical persistent learned-skill state for the Binder collection.
@@ -53,9 +54,10 @@ contract BinderSkills is Initializable, AccessControl, UUPSUpgradeable, IEntropy
     }
 
     mapping(uint64 => PendingTomeLearning) private _pendingTomeLearning;
+    mapping(uint256 => uint256) public pendingTomeCount;
 
     /// @dev Reserved only for future appended BinderSkills storage variables.
-    uint256[38] private __gap;
+    uint256[37] private __gap;
 
     event MoveSetLearned(uint256 indexed tokenId, uint8 indexed slot, uint32 indexed artId);
     event ActiveSkillLearned(uint256 indexed tokenId, uint32 indexed artId);
@@ -84,6 +86,44 @@ contract BinderSkills is Initializable, AccessControl, UUPSUpgradeable, IEntropy
     error TomeLearningRescueNotReady(uint64 sequenceNumber, uint48 availableAt);
     error InvalidTomeLearningPayment(uint256 expected, uint256 received);
     error UnsupportedTomeArtType(uint32 artId, uint8 artTypeId);
+    error InvalidActivityArtProof();
+
+    /// @notice Start-time reward eligibility. Growth and equipment never qualify an Art.
+    function eligibleActivityArt(uint256 tokenId, uint32 artId) external view returns (uint16 version, uint8 artType) {
+        if (_hasLearnedArt(tokenId, artId)) return (0, 0);
+        IBook0fArts arts = IBook0fArts(ICentralConsole(centralConsole).book0fArts());
+        if (!arts.artExists(artId)) return (0, 0);
+        binderStructs.ArtDefinition memory art = arts.getArtDefinition(artId);
+        if (
+            !art.enabled || art.artTypeId < 1 || art.artTypeId > 3
+                || !arts.isClassEligible(artId, art.version, IBinderData(binderData).getNFTClass(tokenId))
+        ) return (0, 0);
+        if (art.artTypeId == BinderIds.ART_TYPE_MOVE_SET && _moveSets[tokenId][2] != 0) return (0, 0);
+        if (!_meetsArtRequirements(tokenId, art)) return (0, 0);
+        return (art.version, art.artTypeId);
+    }
+
+    /// @notice Only the exact settled escrow record can grant its selected snapshot reward.
+    /// Disabled, duplicate and fourth-pattern selections are no-ops, never rerolled.
+    function grantActivityArt(bytes32 activityId, bool pattern) external returns (bool granted) {
+        IBinderData data = IBinderData(binderData);
+        (uint256 tokenId,, uint8 kind, uint8 phase) = IGrowthActivity(msg.sender).activityProof(activityId);
+        if (
+            phase != 4 || (kind != 3 && kind != 4) || data.activeGrowthController(tokenId) != msg.sender
+                || data.activeGrowthActivity(tokenId) != activityId || data.ownerOf(tokenId) != msg.sender
+        ) {
+            revert InvalidActivityArtProof();
+        }
+        (address book, uint32 artId, uint16 version) = IGrowthActivity(msg.sender).skillReward(activityId, pattern);
+        if (artId == 0 || _hasLearnedArt(tokenId, artId)) return false;
+        IBook0fArts arts = IBook0fArts(book);
+        if (!arts.isArtEnabled(artId)) return false;
+        binderStructs.ArtDefinition memory art = arts.getArtDefinitionAtVersion(artId, version);
+        if (pattern != (art.artTypeId == BinderIds.ART_TYPE_MOVE_SET)) revert InvalidActivityArtProof();
+        if (pattern && _moveSets[tokenId][2] != 0) return false;
+        _learnArt(tokenId, art);
+        return true;
+    }
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -214,6 +254,7 @@ contract BinderSkills is Initializable, AccessControl, UUPSUpgradeable, IEntropy
         pending.successBps = tome.learnSuccessBps;
         pending.burnPolicy = tome.burnPolicy;
         pending.requestedAt = uint48(block.timestamp);
+        ++pendingTomeCount[tokenId];
         emit TomeLearningRequested(sequence, tokenId, tomeTokenId);
     }
 
@@ -226,6 +267,7 @@ contract BinderSkills is Initializable, AccessControl, UUPSUpgradeable, IEntropy
         uint48 availableAt = pending.requestedAt + TOME_RESCUE_DELAY;
         if (block.timestamp < availableAt) revert TomeLearningRescueNotReady(sequenceNumber, availableAt);
         delete _pendingTomeLearning[sequenceNumber];
+        --pendingTomeCount[pending.binderId];
         binderInventory.unlockTomeForLearning(pending.binderId, pending.tomeTokenId);
         emit TomeLearningRescued(sequenceNumber, pending.binderId, pending.tomeTokenId);
     }
@@ -307,6 +349,7 @@ contract BinderSkills is Initializable, AccessControl, UUPSUpgradeable, IEntropy
         PendingTomeLearning memory pending = _pendingTomeLearning[sequenceNumber];
         if (pending.binderId == 0) revert UnknownTomeLearning(sequenceNumber);
         delete _pendingTomeLearning[sequenceNumber];
+        --pendingTomeCount[pending.binderId];
 
         bool learned = uint256(randomNumber) % 10_000 < pending.successBps;
         if (learned) {
@@ -370,16 +413,25 @@ contract BinderSkills is Initializable, AccessControl, UUPSUpgradeable, IEntropy
         if (!arts.isClassEligible(artId, definition.version, classId)) {
             revert ArtClassIneligible(tokenId, classId, artId, definition.version);
         }
+        if (!_meetsArtRequirements(tokenId, definition)) revert UnitNotReadyToLearn(tokenId);
+    }
+
+    function _meetsArtRequirements(uint256 tokenId, binderStructs.ArtDefinition memory definition)
+        private
+        view
+        returns (bool)
+    {
         binderStructs.NFTMetadata memory details = IBinderData(binderData).getNFTDetails(tokenId);
         for (uint256 i; i < 8; ++i) {
-            if (details.staticStats.stats[i] < definition.minBaseStats[i]) revert UnitNotReadyToLearn(tokenId);
+            if (details.staticStats.stats[i] < definition.minBaseStats[i]) return false;
         }
         for (uint256 i; i < definition.requiredSkillIds.length; ++i) {
-            if (!_hasLearnedArt(tokenId, definition.requiredSkillIds[i])) revert UnitNotReadyToLearn(tokenId);
+            if (!_hasLearnedArt(tokenId, definition.requiredSkillIds[i])) return false;
         }
         for (uint256 i; i < definition.forbiddenSkillIds.length; ++i) {
-            if (_hasLearnedArt(tokenId, definition.forbiddenSkillIds[i])) revert UnitNotReadyToLearn(tokenId);
+            if (_hasLearnedArt(tokenId, definition.forbiddenSkillIds[i])) return false;
         }
+        return true;
     }
 
     function _learnArt(uint256 tokenId, binderStructs.ArtDefinition memory art) private {

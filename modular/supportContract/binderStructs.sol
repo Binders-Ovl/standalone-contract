@@ -2,6 +2,64 @@
 pragma solidity ^0.8.24;
 
 library binderStructs {
+    struct GrowthTerms {
+        bool enabled;
+        bool refundOnRescue;
+        uint16 version;
+        uint32 duration;
+        uint32 entropyRescueDelay;
+        uint128 price;
+    }
+
+    struct TrainingRule {
+        GrowthTerms terms;
+        uint16 successBps;
+        uint32 minGain;
+        uint32 maxGain;
+        GrowthStatProfile profile;
+        uint32 artPoolId;
+        uint32 patternPoolId;
+        uint16 artBps;
+        uint16 patternBps;
+    }
+
+    struct QuestRule {
+        GrowthTerms terms;
+        uint16 deathBps;
+        uint16 successBps;
+        uint16 currencyBps;
+        uint16 itemBps;
+        uint16 statBps;
+        uint16 nftBps;
+        uint16 injuryBps;
+        uint16 artBps;
+        uint16 patternBps;
+        uint128 minCurrency;
+        uint128 maxCurrency;
+        GrowthStatProfile profile;
+        bool injuryIsPercent;
+        uint16 injuryAmount;
+        uint32 itemTableId;
+        uint32 nftTableId;
+        uint32 artPoolId;
+        uint32 patternPoolId;
+        uint32 contextTableId;
+    }
+
+    struct QuestClassReward {
+        uint256 classId;
+        uint16 weight;
+    }
+
+    /// @notice Three distinct weighted stat outcomes, shared by xDrill, Errantry and Quest.
+    struct GrowthStatProfile {
+        uint16[8] primaryWeights;
+        uint16[8] secondaryWeights;
+        uint16[8] tertiaryWeights;
+        int32[3] minDeltas;
+        int32[3] maxDeltas;
+    }
+
     // @notice: Array of stats that determine unit stats in following order
     // STR  determine pATK (Weapon Based  Value)        ==>     uint8[0]
     // INT  determine mATK (Skill Based Value)          ==>     uint8[1]

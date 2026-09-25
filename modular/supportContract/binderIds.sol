@@ -51,6 +51,8 @@ library BinderIds {
     uint8 internal constant ACTIVITY_IDLE = 0;
     uint8 internal constant ACTIVITY_BATTLE = 1;
     uint8 internal constant ACTIVITY_FUSION = 2;
+    uint8 internal constant ACTIVITY_TRAINING = 3;
+    uint8 internal constant ACTIVITY_QUEST = 4;
     uint8 internal constant INVALID_AILMENT_ID = 0;
     uint8 internal constant MIN_AILMENT_ID = 1;
     uint8 internal constant MAX_AILMENT_ID = type(uint8).max;
@@ -61,6 +63,10 @@ library BinderIds {
     uint8 internal constant MAX_BATTLE_LOADOUT_ARTS = 8;
 
     bytes32 internal constant MODULE_BINDER_DATA = keccak256("BINDERS_MODULE_BINDER_DATA");
+    bytes32 internal constant MODULE_BOOK_OF_GROWTH = keccak256("BINDERS_MODULE_BOOK_OF_GROWTH");
+    bytes32 internal constant MODULE_BINDER_GROWTH = keccak256("BINDERS_MODULE_BINDER_GROWTH");
+    bytes32 internal constant MODULE_TRAINING = keccak256("BINDERS_MODULE_TRAINING");
+    bytes32 internal constant MODULE_QUEST = keccak256("BINDERS_MODULE_QUEST");
     bytes32 internal constant MODULE_BINDER_SKILLS = keccak256("BINDERS_MODULE_BINDER_SKILLS");
     bytes32 internal constant MODULE_BINDER_METADATA = keccak256("BINDERS_MODULE_BINDER_METADATA");
     bytes32 internal constant MODULE_BOOK_OF_LIFE = keccak256("BINDERS_MODULE_BOOK_OF_LIFE");

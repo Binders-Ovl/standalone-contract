@@ -21,7 +21,8 @@ contract RuntimeSizeTest is Test {
     function testNonImmutableCoreRuntimeCodeRemainsDeployable() public pure {
         uint256 binderDataBytes = type(BinderData).runtimeCode.length;
         console2.log("BinderData runtime bytes", binderDataBytes);
-        console2.log("BinderData EIP-170 reference headroom", EIP170_REFERENCE_RUNTIME_BYTES - binderDataBytes);
+        console2.log("BinderData EIP-170 reference headroom (signed)");
+        console2.logInt(int256(EIP170_REFERENCE_RUNTIME_BYTES) - int256(binderDataBytes));
         if (binderDataBytes >= BINDER_DATA_WARNING_RUNTIME_BYTES) {
             console2.log("WARNING: BinderData crossed the ERC721C planning threshold");
         }

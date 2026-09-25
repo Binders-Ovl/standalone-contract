@@ -33,6 +33,24 @@ interface IBinderData is IERC721 {
     function resurrectFromGraveyard(uint256 tokenId, address recipient, uint16 currentHP, uint16 currentMP) external;
     function startActivity(uint256 tokenId, uint8 activityId, uint48 lockedUntil) external;
     function endActivity(uint256 tokenId) external;
+    function escrowGrowthActivity(
+        uint256 tokenId,
+        address beneficiary,
+        uint8 activityKind,
+        bytes32 activityId,
+        uint48 maturity
+    ) external;
+    function releaseGrowthActivity(uint256 tokenId, bytes32 activityId) external;
+    function settleQuestVitals(uint256 tokenId, bytes32 activityId, bool dead, uint16 damage) external;
+    function mintQuestReward(
+        uint256 parentId,
+        bytes32 activityId,
+        binderStructs.NFTMetadata calldata metadata,
+        string calldata rarityName
+    ) external returns (uint256);
+    function activeGrowthController(uint256 tokenId) external view returns (address);
+    function activeGrowthActivity(uint256 tokenId) external view returns (bytes32);
+    function activeGrowthCount() external view returns (uint256);
     function endBattleActivity(uint256 tokenId, address battleProxy) external;
     function endFusionActivity(uint256 tokenId) external;
     function updateNFTStats(

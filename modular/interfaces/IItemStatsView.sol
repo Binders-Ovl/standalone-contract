@@ -5,5 +5,5 @@ import "./IBinderData.sol";
 
 interface IItemStatsView {
     function binderData() external view returns (IBinderData);
-    function statsWithGrowth(uint256 binderId) external view returns (uint16[8] memory);
+    function statsWithGrowth(uint256 binderId) external view returns (uint32[8] memory);
 }

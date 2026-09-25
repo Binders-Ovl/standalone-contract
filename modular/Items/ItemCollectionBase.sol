@@ -7,6 +7,8 @@ import "../interfaces/IBook0fItems.sol";
 import "../interfaces/IBinderInventory.sol";
 import "../interfaces/ICreatorTokenTransferValidatorV5.sol";
 import "../interfaces/IItemMetadataBuilder.sol";
+import {IQuestReward} from "../interfaces/IGrowthActivity.sol";
+import {IBinderData} from "../interfaces/IBinderData.sol";
 
 /// @notice Shared authority and transfer-policy plumbing for the three item collections.
 abstract contract ItemCollectionBase is OwnableBasic, CreatorTokenBase {
@@ -15,6 +17,46 @@ abstract contract ItemCollectionBase is OwnableBasic, CreatorTokenBase {
     address public inventory;
     string public baseImageURI;
     mapping(address => bool) public issuers;
+    mapping(address => bool) public questControllers;
+    mapping(bytes32 => bool) private _questRewardIssued;
+
+    event QuestControllerApproved(address indexed controller);
+
+    function approveQuestController(address controller) external onlyOwner {
+        if (controller.code.length == 0) revert InvalidAddress();
+        questControllers[controller] = true;
+        emit QuestControllerApproved(controller);
+    }
+
+    /// @dev Quest never receives generic issuer authority. Only its selected,
+    /// settled reward for an NFT it still escrows can bypass a later item disable.
+    function _authorizeWalletMint(address to, uint16 libraryId, uint128 amount, bytes32 activityId)
+        internal
+        returns (bool snapshotted)
+    {
+        if (!questControllers[msg.sender]) {
+            if (!issuers[msg.sender]) revert UnauthorizedIssuer(msg.sender);
+            return false;
+        }
+        IQuestReward quest = IQuestReward(msg.sender);
+        (uint256 binderId, address beneficiary, uint8 kind, uint8 phase) = quest.activityProof(activityId);
+        if (kind != 4 || phase != 4 || beneficiary != to || _questRewardIssued[activityId]) {
+            revert UnauthorizedIssuer(msg.sender);
+        }
+        IBinderData data = quest.binderData();
+        if (
+            data.activeGrowthController(binderId) != msg.sender || data.activeGrowthActivity(binderId) != activityId
+                || data.ownerOf(binderId) != msg.sender
+        ) revert UnauthorizedIssuer(msg.sender);
+        (address collection, address recipient, uint16 selectedId, uint128 selectedAmount) =
+            quest.itemReward(activityId);
+        if (
+            collection != address(this) || recipient != to || selectedId != libraryId || selectedAmount != amount
+                || amount == 0
+        ) revert UnauthorizedIssuer(msg.sender);
+        _questRewardIssued[activityId] = true;
+        return true;
+    }
 
     event IssuerUpdated(address indexed issuer, bool allowed);
     event InventoryUpdated(address indexed inventory);

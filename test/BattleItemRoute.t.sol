@@ -5,6 +5,9 @@ import "forge-std/Test.sol";
 import {BattleFactory} from "../modular/Battle/BattleFactory.sol";
 import {BattleProxy} from "../modular/Battle/BattleProxy.sol";
 import {BinderData} from "../modular/BinderData.sol";
+import {ItemStatsView} from "../modular/Items/ItemStatsView.sol";
+import {IItemStatsView} from "../modular/interfaces/IItemStatsView.sol";
+import {IBinderData} from "../modular/interfaces/IBinderData.sol";
 import {Book0fArts} from "../modular/shelf/Book0fArts.sol";
 import {Book0fItems} from "../modular/shelf/Book0fItems.sol";
 import {Book0fRealms} from "../modular/shelf/Book0fRealms.sol";
@@ -62,20 +65,38 @@ contract BattleItemSkillsMock {
     }
 }
 
+contract BattlePermanentStatsMock is IItemStatsView {
+    IBinderData public immutable binderData;
+
+    constructor(address dataAddress) {
+        binderData = IBinderData(dataAddress);
+    }
+
+    function statsWithGrowth(uint256) external pure returns (uint32[8] memory stats) {
+        stats = [uint32(100_000), 10, 10, 10, 10, 10, 10, 10];
+    }
+}
+
 contract BattleItemInventoryMock {
     IBook0fItems public immutable book;
+    IItemStatsView public statsView;
     address public factory;
     mapping(uint256 => InventorySlot[20]) private _slots;
 
     error UnauthorizedProxy(address caller);
     error InvalidConsumption();
 
-    constructor(address bookAddress) {
+    constructor(address bookAddress, address dataAddress) {
         book = IBook0fItems(bookAddress);
+        statsView = new ItemStatsView(dataAddress);
     }
 
     function setFactory(address factoryAddress) external {
         factory = factoryAddress;
+    }
+
+    function setStatsView(IItemStatsView viewAddress) external {
+        statsView = viewAddress;
     }
 
     function setSItem(uint256 binderId, uint8 slot, uint16 sItemId, uint128 amount) external {
@@ -133,7 +154,7 @@ contract BattleItemRouteTest is Test {
         itemBook = new Book0fItems(address(registry), address(this), address(arts));
         itemBook.addSItem(_battleConsumable());
         itemBook.addSItem(_unsupportedObject());
-        inventory = new BattleItemInventoryMock(address(itemBook));
+        inventory = new BattleItemInventoryMock(address(itemBook), address(data));
 
         BattleProxy implementation = new BattleProxy();
         factory = new BattleFactory(address(this), address(registry), address(implementation));
@@ -148,6 +169,17 @@ contract BattleItemRouteTest is Test {
         _mint(2, BOB);
         inventory.setSItem(1, 0, 1, 1);
         inventory.setSItem(1, 1, 2, 1);
+    }
+
+    function testBattleSnapshotsWideGrowthWithoutChangingBaseStats() public {
+        inventory.setStatsView(new BattlePermanentStatsMock(address(data)));
+        BattleProxy battle = _createBattle();
+        inventory.setStatsView(new ItemStatsView(address(data)));
+        vm.prank(ALICE);
+        battle.useArt(1, 1, 2);
+        assertEq(battle.getBattleUnit(2).currentHP, 0);
+        assertEq(battle.getBattleUnit(1).baseStats[0], 10);
+        assertEq(data.getNFTDetails(1).staticStats.stats[0], 10);
     }
 
     function testOfficialProxyConsumesAtomicallyAndAppliesTypedBattleEffects() public {
