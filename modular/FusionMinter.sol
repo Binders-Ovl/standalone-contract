@@ -77,7 +77,6 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
 
     error IdenticalFusionTokens(uint256 tokenId);
     error FusionTokenNotReady(uint256 tokenId);
-    error FusionRecipeUnavailable(uint256 class1, uint256 class2);
     error UnknownEntropySequence(uint64 sequenceNumber);
     error FusionNotPending(uint256 fusionId, FusionStatus status);
     error FusionRescueNotReady(uint256 fusionId, uint48 availableAt);
@@ -126,10 +125,7 @@ contract FusionMinter is ERC721Holder, Ownable, AccessControl, Pausable, Reentra
             if (binderInventory.hasInventory(nftId1)) revert FusionInventoryNotEmpty(nftId1);
             if (binderInventory.hasInventory(nftId2)) revert FusionInventoryNotEmpty(nftId2);
         }
-        (uint256 class1, uint256 class2) = _sortMi(binderData.getNFTClass(nftId1), binderData.getNFTClass(nftId2));
-        binderStructs.FusionRecipe memory recipe = book0fLife.getFusionRecipe(class1, class2);
-        if (recipe.outcomes.length == 0) revert FusionRecipeUnavailable(class1, class2);
-
+        // Recipes are optional: settlement falls back to either parent class with equal probability.
         uint256 fusionId = ++nextFusionId;
         _fusionRequest[fusionId] =
             binderStructs.FusionRequest({user: msg.sender, nftId1: nftId1, nftId2: nftId2, resolved: false});
